@@ -29,8 +29,8 @@ def iterate_minibatches(inputs, targets, batchsize, shuffle=True, augment=True):
         cy = np.random.randint(inputs.shape[2] - h, size=1)
         cx = np.random.randint(inputs.shape[3] - w, size=1)
 
-        input_cropped = inputs[excerpt, :, cy:cy+h, cx:cx+w]
-        target_cropped = targets[excerpt, cy:cy+h, cx:cx+w]
+        input_cropped = inputs[excerpt, :, cy:cy+h, cx:cx+w].copy()
+        target_cropped = targets[excerpt, cy:cy+h, cx:cx+w].copy()
 
         yield input_cropped, target_cropped
 
@@ -49,7 +49,7 @@ def load_data():
     return (x_train, y_train)
 
 
-def main(num_epochs=10, lr=0.01, batch_size=4):
+def main(num_epochs=10, lr=0.01, batch_size=16):
     print "Building network"
     input_var = T.tensor4('inputs')
     target_var = T.tensor3('targets')
@@ -93,9 +93,8 @@ def main(num_epochs=10, lr=0.01, batch_size=4):
         for batch in iterate_minibatches(X_train, Y_train, batch_size, shuffle=True, augment=True):
             inputs, targets = batch
             err = train_fn(inputs, targets)
+            print "Training error: " + str(err)
             train_err += err
-            print err
-
             train_batches += 1
 
         # Then we print the results for this epoch:
