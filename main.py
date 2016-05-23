@@ -38,11 +38,11 @@ def iterate_minibatches(inputs, targets, batchsize, shuffle=True, augment=True):
 def load_data():
     f = h5py.File(DATASET + ".hdf5")
 
-    x_train = np.array(f["images"])
-    y_train = np.array(f["depths"])
+    x_train = np.array(f["images"]).astype(np.float32)
+    y_train = np.array(f["depths"]).astype(np.float32)
 
     # Subtract mean already and normalize std
-    m = np.load(DATASET + ".npy")
+    m = np.load(DATASET + ".npy").astype(np.float32)
     for i in range(len(x_train)):
         x_train[i] = (x_train[i] - m) / 68.
 
