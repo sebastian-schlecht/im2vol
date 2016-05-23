@@ -93,7 +93,7 @@ def main(num_epochs=10, lr=0.01, batch_size=4):
         for batch in iterate_minibatches(X_train, Y_train, batch_size, shuffle=True, augment=True):
             inputs, targets = batch
             train_err += train_fn(inputs, targets)
-            print train_err
+            print train_err / train_batches
             train_batches += 1
 
         # Then we print the results for this epoch:
