@@ -90,10 +90,10 @@ def main(num_epochs=40, lr=0.01, batch_size=8):
         train_err = 0
         train_batches = 0
         start_time = time.time()
+        print "Training Epoch %i" % epoch
         for batch in iterate_minibatches(X_train, Y_train, batch_size, shuffle=True, augment=True):
             inputs, targets = batch
             err = train_fn(inputs, targets)
-            print "Training error: " + str(err)
             train_err += err
             train_batches += 1
 
