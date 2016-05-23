@@ -49,7 +49,7 @@ def load_data():
     return (x_train, y_train)
 
 
-def main(num_epochs=10, lr=0.01, batch_size=16):
+def main(num_epochs=40, lr=0.01, batch_size=8):
     print "Building network"
     input_var = T.tensor4('inputs')
     target_var = T.tensor3('targets')
@@ -83,8 +83,8 @@ def main(num_epochs=10, lr=0.01, batch_size=16):
         # shuffle training data
         train_indices = np.arange(X_train.shape[0])
         np.random.shuffle(train_indices)
-        X_train = X_train[train_indices,:,:,:]
-        Y_train = Y_train[train_indices,:,:]
+        X_train = X_train[train_indices, :, :, :]
+        Y_train = Y_train[train_indices, :, :]
 
         # In each epoch, we do a full pass over the training data:
         train_err = 0
@@ -101,6 +101,9 @@ def main(num_epochs=10, lr=0.01, batch_size=16):
         print("Epoch {} of {} took {:.3f}s".format(
             epoch + 1, num_epochs, time.time() - start_time))
         print("  training loss:\t\t{:.6f}".format(train_err / train_batches))
+
+    # Save
+    np.savez('./data/vnet_epoch_%i.npz' % num_epochs, *lasagne.layers.get_all_param_values(network))
 
 
 if __name__ == '__main__':
