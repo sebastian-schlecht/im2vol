@@ -7,7 +7,7 @@ import time
 
 DATASET = "./data/nyu_depth_combined_vnet2"
 
-from networks import vnet
+from networks import vnet, residual_fc
 from losses import scale_invariant_error
 
 
