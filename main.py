@@ -92,8 +92,9 @@ def main(num_epochs=10, lr=0.01, batch_size=4):
         start_time = time.time()
         for batch in iterate_minibatches(X_train, Y_train, batch_size, shuffle=True, augment=True):
             inputs, targets = batch
-            train_err += train_fn(inputs, targets)
-            print train_err
+            err = train_fn(inputs, targets)
+            train_err += err
+            print err
             train_batches += 1
 
         # Then we print the results for this epoch:
