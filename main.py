@@ -7,7 +7,7 @@ import time
 
 DATASET = "./data/nyu_depth_combined_vnet2"
 
-from networks import build_vnet
+from networks import vnet
 from losses import scale_invariant_error
 
 
@@ -57,7 +57,7 @@ def main(num_epochs=40, lr=0.01, batch_size=8):
     # Reshape to enable usage in loss function
     target_reshaped = target_var.reshape((-1, 1, 240, 320))
 
-    network = build_vnet(input_var=input_var)
+    network = vnet(input_var=input_var)
     prediction = lasagne.layers.get_output(network)
 
     # Scale invariant loss
