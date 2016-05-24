@@ -1,5 +1,5 @@
 import theano.tensor as T
-
+import numpy as np
 
 def tukey_biweight(predictions, targets, c=4.685, s=1.4826):
     """
@@ -55,6 +55,48 @@ def tukey_biweight(predictions, targets, c=4.685, s=1.4826):
     # Aggregate
     return T.sum(T.sum(T.switch(tukey_mask, (c ** 2) / 6., cost), axis=1)) / T.maximum((T.sum(n_valid)), 1)
 
+
+def spatial_gradient(prediction, target, l=0.5):
+    # Flatten input to make calc easier
+    pred = prediction
+    pred_v = pred.flatten(2)
+    target_v = target.flatten(2)
+    # Compute mask
+    mask = T.gt(target_v,0)
+    # Compute n of valid pixels
+    n_valid = T.sum(mask, axis=1)
+    # Apply mask and log transform
+    m_pred = pred_v * mask
+    m_t = T.switch(mask, T.log(target_v),0)
+    d = m_pred - m_t
+
+    # Define scale invariant cost
+    scale_invariant_cost = (T.sum(n_valid * T.sum(d**2, axis=1)) - l*T.sum(T.sum(d, axis=1)**2))/ T.maximum(T.sum(n_valid**2), 1)
+
+    # Add spatial gradient components from D. Eigen DNL
+
+    # Squeeze in case
+    if pred.ndim == 4:
+        pred = pred[:,0,:,:]
+    if target.ndim == 4:
+        target = target[:,0,:,:]
+    # Mask in tensor form
+    mask_tensor = T.gt(target,0)
+    # Project into log space
+    target = T.switch(mask_tensor, T.log(target),0)
+    # Stepsize
+    h = 1
+    # Compute spatial gradients symbolically
+    p_di = (pred[:,h:,:] - pred[:,:-h,:]) * (1 / np.float32(h))
+    p_dj = (pred[:,:,h:] - pred[:,:,:-h]) * (1 / np.float32(h))
+    t_di = (target[:,h:,:] - target[:,:-h,:]) * (1 / np.float32(h))
+    t_dj = (target[:,:,h:] - target[:,:,:-h]) * (1 / np.float32(h))
+    m_di = T.and_(mask_tensor[:,h:,:], mask_tensor[:,:-h,:])
+    m_dj = T.and_(mask_tensor[:,:,h:], mask_tensor[:,:,:-h])
+    # Define spatial grad cost
+    grad_cost = T.sum(m_di * (p_di - t_di)**2) / T.sum(m_di) + T.sum(m_dj * (p_dj - t_dj)**2) / T.sum(m_dj)
+    # Compute final expression
+    return scale_invariant_cost + grad_cost
 
 def scale_invariant_error(predictions, targets):
     """
