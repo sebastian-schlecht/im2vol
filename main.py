@@ -49,7 +49,7 @@ def load_data():
     return (x_train, y_train)
 
 
-def main(num_epochs=40, lr=0.01, batch_size=8):
+def main(num_epochs=20, lr=0.01, batch_size=8):
     print "Building network"
     input_var = T.tensor4('inputs')
     target_var = T.tensor3('targets')
