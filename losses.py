@@ -55,13 +55,15 @@ def tukey_biweight(predictions, targets, c=4.685, s=1.4826):
         return median(T.abs_(tensor - med))
 
     # Residual
-    r_i = (m_pred - m_t) / s * mad(m_t)
+
+    r_i = (m_pred - m_t) / (s * mad(m_t))
+
     # Compute the masking vectors
-    tukey_mask = T.gt(r_i, c)
+    tukey_mask = T.gt(T.abs_(r_i), c)
 
     # Cost
-    cost = (c ** 2 / 6) * (1 - (r_i / c) ** 2) ** 2
-    return T.sum(T.sum(T.switch(tukey_mask, (c ** 2) / 6, cost), axis=1)) / T.max(n_valid, 1)
+    cost = (c ** 2 / 6) * (1-(1 - (r_i / c) ** 2) ** 3)
+    return T.sum(T.sum(T.switch(tukey_mask, (c ** 2) / 6., cost), axis=1)) / T.maximum((T.sum(n_valid)), 1)
 
 
 def scale_invariant_error(predictions, targets):
