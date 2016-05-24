@@ -6,6 +6,7 @@ import h5py
 import time
 
 DATASET = "./data/nyu_depth_combined_vnet2"
+name = "vnet"
 
 from networks import vnet
 from losses import scale_invariant_error
@@ -66,19 +67,21 @@ def main(num_epochs=20, lr=0.01, batch_size=8):
     # Add some L2
     all_layers = lasagne.layers.get_all_layers(network)
     l2_penalty = lasagne.regularization.regularize_layer_params(all_layers, lasagne.regularization.l2) * 0.0001
-    loss = loss + l2_penalty
+    cost = loss + l2_penalty
 
     params = lasagne.layers.get_all_params(network, trainable=True)
     sh_lr = theano.shared(lasagne.utils.floatX(lr))
-    updates = lasagne.updates.momentum(loss, params, learning_rate=sh_lr, momentum=0.9)
+    updates = lasagne.updates.momentum(cost, params, learning_rate=sh_lr, momentum=0.9)
 
     print "Compiling network"
+    # We want to have the main loss only, not l2 values
     train_fn = theano.function([input_var, target_var], loss, updates=updates)
 
     print "Loading data"
     X_train, Y_train = load_data()
 
     print "Starting training"
+    train_losses = []
     for epoch in range(num_epochs):
         # shuffle training data
         train_indices = np.arange(X_train.shape[0])
@@ -94,6 +97,7 @@ def main(num_epochs=20, lr=0.01, batch_size=8):
         for batch in iterate_minibatches(X_train, Y_train, batch_size, shuffle=True, augment=True):
             inputs, targets = batch
             err = train_fn(inputs, targets)
+            train_losses.append(err)
             train_err += err
             train_batches += 1
 
@@ -103,7 +107,8 @@ def main(num_epochs=20, lr=0.01, batch_size=8):
         print("  training loss:\t\t{:.6f}".format(train_err / train_batches))
 
     # Save
-    np.savez('./data/vnet_epoch_%i.npz' % num_epochs, *lasagne.layers.get_all_param_values(network))
+    np.savez('./data/' + name +'_epoch_%i.npz' % num_epochs, *lasagne.layers.get_all_param_values(network))
+    np.save('./data/' + name + '_loss.npy', np.array(train_losses))
 
 
 if __name__ == '__main__':

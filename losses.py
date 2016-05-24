@@ -1,16 +1,4 @@
 import theano.tensor as T
-import numpy as np
-
-
-def mad(arr):
-    """
-    Median Absolute Deviation: a "Robust" version of standard deviation.
-    Indices variabililty of the sample.
-    https://en.wikipedia.org/wiki/Median_absolute_deviation
-    """
-    arr = np.ma.array(arr).compressed()  # should be faster to not use masked arrays.
-    med = np.median(arr)
-    return np.median(np.abs(arr - med))
 
 
 def tukey_biweight(predictions, targets, c=4.685, s=1.4826):
@@ -20,7 +8,7 @@ def tukey_biweight(predictions, targets, c=4.685, s=1.4826):
     :param targets: Target tensor
     :param c: Tukey tuning constant
     :param s: Consistence scale parameter
-    :return:
+    :return: Cost function
     """
     # Flatten input to make calc easier
     pred = predictions.flatten(2)
@@ -37,8 +25,9 @@ def tukey_biweight(predictions, targets, c=4.685, s=1.4826):
         """
         MAD tensor from https://groups.google.com/forum/#!topic/theano-users/I4eHjbAetEQ
         :param tensor: Input tensor
-        :return: MAD expression
+        :return: Median expression
         """
+        tensor = tensor.flatten(1)
         return T.switch(T.eq((tensor.shape[0] % 2), 0),
                         # if even vector
                         T.mean(T.sort(tensor)[((tensor.shape[0] / 2) - 1): ((tensor.shape[0] / 2) + 1)]),
@@ -49,20 +38,21 @@ def tukey_biweight(predictions, targets, c=4.685, s=1.4826):
         """
         Median absolute deviation
         :param tensor: Input tensor
-        :return:
+        :return: MAD
         """
         med = median(tensor=tensor)
         return median(T.abs_(tensor - med))
 
     # Residual
-
-    r_i = (m_pred - m_t) / (s * mad(m_t))
+    r_i = (m_pred - m_t)
+    r_i = r_i / (s * mad(r_i))
 
     # Compute the masking vectors
     tukey_mask = T.gt(T.abs_(r_i), c)
 
     # Cost
     cost = (c ** 2 / 6) * (1-(1 - (r_i / c) ** 2) ** 3)
+    # Aggregate
     return T.sum(T.sum(T.switch(tukey_mask, (c ** 2) / 6., cost), axis=1)) / T.maximum((T.sum(n_valid)), 1)
 
 
