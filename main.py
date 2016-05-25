@@ -6,10 +6,11 @@ import h5py
 import time
 
 DATASET = "./data/nyu_depth_combined_vnet2"
-name = "vnet"
+name = "vnet_spatial_grad"
+model = "./data/vnet_epoch_20.npz"
 
 from networks import vnet
-from losses import scale_invariant_error
+from losses import scale_invariant_error, tukey_biweight, spatial_gradient
 
 
 def iterate_minibatches(inputs, targets, batchsize, shuffle=True, augment=True):
@@ -50,7 +51,7 @@ def load_data():
     return (x_train, y_train)
 
 
-def main(num_epochs=20, lr=0.01, batch_size=8):
+def main(num_epochs=40, lr=0.01, batch_size=8):
     print "Building network"
     input_var = T.tensor4('inputs')
     target_var = T.tensor3('targets')
@@ -61,8 +62,9 @@ def main(num_epochs=20, lr=0.01, batch_size=8):
     network = vnet(input_var=input_var)
     prediction = lasagne.layers.get_output(network)
 
-    # Scale invariant loss
-    loss = scale_invariant_error(predictions=prediction, targets=target_reshaped)
+    # Spatial grad / biweight / scale invariant error
+    # loss = scale_invariant_error(predictions=prediction, targets=target_reshaped)
+    loss = spatial_gradient(prediction, target_reshaped)
 
     # Add some L2
     all_layers = lasagne.layers.get_all_layers(network)
@@ -72,7 +74,11 @@ def main(num_epochs=20, lr=0.01, batch_size=8):
     params = lasagne.layers.get_all_params(network, trainable=True)
     sh_lr = theano.shared(lasagne.utils.floatX(lr))
     updates = lasagne.updates.momentum(cost, params, learning_rate=sh_lr, momentum=0.9)
-
+    if model is not None:
+        print "Loading model weights %s" % model
+        with np.load(model) as f:
+            param_values = [f['arr_%d' % i] for i in range(len(f.files))]
+            lasagne.layers.set_all_param_values(network, param_values)
     print "Compiling network"
     # We want to have the main loss only, not l2 values
     train_fn = theano.function([input_var, target_var], loss, updates=updates)
@@ -83,6 +89,9 @@ def main(num_epochs=20, lr=0.01, batch_size=8):
     print "Starting training"
     train_losses = []
     for epoch in range(num_epochs):
+        if epoch == num_epochs // 2:
+            print "Decreasing LR"
+            sh_lr.set_value(lr / 10)
         # shuffle training data
         train_indices = np.arange(X_train.shape[0])
         np.random.shuffle(train_indices)
@@ -93,10 +102,23 @@ def main(num_epochs=20, lr=0.01, batch_size=8):
         train_err = 0
         train_batches = 0
         start_time = time.time()
-        print "Training Epoch %i" % epoch
+        bt = 0
+        bidx = 0
+        print "Training Epoch %i" % (epoch + 1)
         for batch in iterate_minibatches(X_train, Y_train, batch_size, shuffle=True, augment=True):
-            inputs, targets = batch
+            inputs, targets = batch 
+            bts = time.time()
             err = train_fn(inputs, targets)
+            bte = time.time()
+            bt += (bte - bts)
+            bidx += 1
+            if bidx == 20 and epoch == 0:
+                tpb = bt / bidx
+                print "Average time per forward/backward pass: " + str(tpb)
+                eta = time.time() + num_epochs * (tpb * (len(X_train)/batch_size))
+                localtime = time.asctime( time.localtime(eta) )
+                print "ETA: " , localtime
+            
             train_losses.append(err)
             train_err += err
             train_batches += 1
