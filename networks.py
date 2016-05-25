@@ -75,7 +75,7 @@ def vnet(input_var=None):
     return l_conv_8_1
 
 
-def d_rs_stack_1(input_var=None, n=5):
+def d_rs_stack_1(input_var=None, n=3):
     l_in = InputLayer(shape=(None, 3, 240, 320), input_var=input_var)
 
     # create a residual learning building block with two stacked 3x3 convlayers as in paper
@@ -124,8 +124,14 @@ def d_rs_stack_1(input_var=None, n=5):
     for _ in range(1,n):
         l = residual_block(l)
 
-    # average pooling
-    l = GlobalPoolLayer(l)
+    l = residual_block(l, increase_dim=True)
+    for _ in range(1,n):
+        l = residual_block(l)
+    l = residual_block(l, increase_dim=True)
+    for _ in range(1,n):
+        l = residual_block(l)
+
+    l = PoolLayer(l, pool_size=(2, 2))
 
     l = DenseLayer(
             l, num_units=4096,
