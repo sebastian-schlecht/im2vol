@@ -1,5 +1,6 @@
 import numpy as np
 import lasagne
+from lasagne.layers import Pool2DLayer
 import theano
 import theano.tensor as T
 import h5py
@@ -7,13 +8,14 @@ import time
 
 DATASET = "./data/nyu_depth_combined_vnet2"
 name = "vnet_spatial_grad"
-model = "./data/vnet_epoch_20.npz"
+#model = "./data/vnet_epoch_20.npz"
+model = None
 
-from networks import vnet
+from networks import vnet, d_rs_stack_1
 from losses import scale_invariant_error, tukey_biweight, spatial_gradient
 
 
-def iterate_minibatches(inputs, targets, batchsize, shuffle=True, augment=True):
+def iterate_minibatches(inputs, targets, batchsize, shuffle=True, augment=True, downsample=1):
     assert len(inputs) == len(targets)
     if shuffle:
         indices = np.arange(len(inputs))
@@ -32,7 +34,7 @@ def iterate_minibatches(inputs, targets, batchsize, shuffle=True, augment=True):
         cx = np.random.randint(inputs.shape[3] - w, size=1)
 
         input_cropped = inputs[excerpt, :, cy:cy+h, cx:cx+w].copy()
-        target_cropped = targets[excerpt, cy:cy+h, cx:cx+w].copy()
+        target_cropped = targets[excerpt, cy:cy+h:downsample, cx:cx+w:downsample].copy()
 
         yield input_cropped, target_cropped
 
@@ -57,9 +59,8 @@ def main(num_epochs=40, lr=0.01, batch_size=8):
     target_var = T.tensor3('targets')
 
     # Reshape to enable usage in loss function
-    target_reshaped = target_var.reshape((-1, 1, 240, 320))
-
-    network = vnet(input_var=input_var)
+    target_reshaped = target_var.dimshuffle((0, "x", 1, 2))
+    network = d_rs_stack_1(input_var=input_var)
     prediction = lasagne.layers.get_output(network)
 
     # Spatial grad / biweight / scale invariant error
@@ -105,7 +106,7 @@ def main(num_epochs=40, lr=0.01, batch_size=8):
         bt = 0
         bidx = 0
         print "Training Epoch %i" % (epoch + 1)
-        for batch in iterate_minibatches(X_train, Y_train, batch_size, shuffle=True, augment=True):
+        for batch in iterate_minibatches(X_train, Y_train, batch_size, shuffle=True, augment=True, downsample=2):
             inputs, targets = batch 
             bts = time.time()
             err = train_fn(inputs, targets)
@@ -117,7 +118,7 @@ def main(num_epochs=40, lr=0.01, batch_size=8):
                 print "Average time per forward/backward pass: " + str(tpb)
                 eta = time.time() + num_epochs * (tpb * (len(X_train)/batch_size))
                 localtime = time.asctime( time.localtime(eta) )
-                print "ETA: " , localtime
+                print "ETA: ", localtime
             
             train_losses.append(err)
             train_err += err
