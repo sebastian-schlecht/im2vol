@@ -1,6 +1,18 @@
 import theano.tensor as T
 import numpy as np
 
+
+def mse(predictions, targets):
+    # Compute mask
+    mask = T.gt(targets, 0)
+    # Compute n of valid pixels
+    n_valid = T.sum(mask)
+    # Apply mask 
+    m_pred = predictions * mask
+    m_t = targets * mask
+    return T.sum((m_pred - m_t)**2) / n_valid
+
+
 def tukey_biweight(predictions, targets, c=4.685, s=1.4826):
     """
     Tukey's biweight function expressed in theano as in

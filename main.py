@@ -7,12 +7,13 @@ import h5py
 import time
 
 DATASET = "./data/nyu_depth_combined_vnet2"
-name = "vnet_spatial_grad"
-#model = "./data/vnet_epoch_20.npz"
-model = None
+name = "rs_stack_2_spatial_grad"
+model = "./data/rs_stack_1_spatial_grad_epoch_250.npz"
+learn_stack = 2
+# model = None
 
-from networks import vnet, d_rs_stack_1
-from losses import scale_invariant_error, tukey_biweight, spatial_gradient
+from networks import vnet, d_rs_stack_1, d_rs_stack_2
+from losses import scale_invariant_error, tukey_biweight, spatial_gradient, mse
 
 
 def iterate_minibatches(inputs, targets, batchsize, shuffle=True, augment=True, downsample=1):
@@ -53,33 +54,73 @@ def load_data():
     return (x_train, y_train)
 
 
-def main(num_epochs=40, lr=0.01, batch_size=8):
+def main(num_epochs=100, lr=0.1, batch_size=4):
     print "Building network"
     input_var = T.tensor4('inputs')
     target_var = T.tensor3('targets')
-
     # Reshape to enable usage in loss function
     target_reshaped = target_var.dimshuffle((0, "x", 1, 2))
-    network = d_rs_stack_1(input_var=input_var)
-    prediction = lasagne.layers.get_output(network)
+    
+    if learn_stack == 1:
+        
+        in_, network = d_rs_stack_1(input_var=input_var)
+        prediction = lasagne.layers.get_output(network)
 
-    # Spatial grad / biweight / scale invariant error
-    # loss = scale_invariant_error(predictions=prediction, targets=target_reshaped)
-    loss = spatial_gradient(prediction, target_reshaped)
+        # Spatial grad / biweight / scale invariant error
+        # loss = scale_invariant_error(predictions=prediction, targets=target_reshaped)
+        loss = spatial_gradient(prediction, target_reshaped)
+        # Add some L2
+        all_layers = lasagne.layers.get_all_layers(network)
+        l2_penalty = lasagne.regularization.regularize_layer_params(all_layers, lasagne.regularization.l2) * 0.0001
+        cost = loss + l2_penalty
 
-    # Add some L2
-    all_layers = lasagne.layers.get_all_layers(network)
-    l2_penalty = lasagne.regularization.regularize_layer_params(all_layers, lasagne.regularization.l2) * 0.0001
-    cost = loss + l2_penalty
-
-    params = lasagne.layers.get_all_params(network, trainable=True)
-    sh_lr = theano.shared(lasagne.utils.floatX(lr))
-    updates = lasagne.updates.momentum(cost, params, learning_rate=sh_lr, momentum=0.9)
-    if model is not None:
-        print "Loading model weights %s" % model
-        with np.load(model) as f:
-            param_values = [f['arr_%d' % i] for i in range(len(f.files))]
-            lasagne.layers.set_all_param_values(network, param_values)
+        params = lasagne.layers.get_all_params(network, trainable=True)
+        sh_lr = theano.shared(lasagne.utils.floatX(lr))
+        updates = lasagne.updates.nesterov_momentum(cost, params, learning_rate=sh_lr, momentum=0.9)
+        # Load model weights
+        if model is not None:
+            print "Loading model weights %s" % model
+            with np.load(model) as f:
+                param_values = [f['arr_%d' % i] for i in range(len(f.files))]
+                lasagne.layers.set_all_param_values(network, param_values)
+        
+    
+    elif learn_stack == 2:
+        # Create stack 1
+        in_, stack_1 = d_rs_stack_1(input_var)
+        params_1 = lasagne.layers.get_all_params(stack_1, trainable=True)
+        layers_1 = lasagne.layers.get_all_layers(stack_1)
+        # Load model weights
+        if model is not None:
+            print "Loading model weights %s" % model
+            with np.load(model) as f:
+                param_values = [f['arr_%d' % i] for i in range(len(f.files))]
+                lasagne.layers.set_all_param_values(stack_1, param_values)
+        
+        # Create stack 2
+        stack_2 = d_rs_stack_2(in_, stack_1)
+        params_2 = lasagne.layers.get_all_params(stack_2, trainable=True)
+        layers_2 = lasagne.layers.get_all_layers(stack_2)
+        
+        layers_top = [l for l in layers_2 if l not in layers_1]
+        # Get output
+        prediction = lasagne.layers.get_output(stack_2)
+        # Fix BN gamma and beta for stack 1
+        _ = lasagne.layers.get_output(stack_1, deterministic=True)
+        # Compute loss
+        loss = spatial_gradient(prediction, target_reshaped)
+        l2_penalty = lasagne.regularization.regularize_layer_params(layers_top, lasagne.regularization.l2) * 0.0001
+        cost = loss + l2_penalty
+        sh_lr = theano.shared(lasagne.utils.floatX(lr))
+        # Only collect stack 2 weights for updates
+        params = [param for param in params_2 if param not in params_1]
+        # TODO Add L2 penalty
+        updates = lasagne.updates.nesterov_momentum(cost, params, learning_rate=sh_lr, momentum=0.9)
+        network = stack_2
+        
+    
+    
+    
     print "Compiling network"
     # We want to have the main loss only, not l2 values
     train_fn = theano.function([input_var, target_var], loss, updates=updates)
@@ -106,7 +147,13 @@ def main(num_epochs=40, lr=0.01, batch_size=8):
         bt = 0
         bidx = 0
         print "Training Epoch %i" % (epoch + 1)
-        for batch in iterate_minibatches(X_train, Y_train, batch_size, shuffle=True, augment=True, downsample=2):
+        
+        ds = 1
+        if learn_stack == 1:
+            ds = 4
+        elif learn_stack == 2:
+            ds = 1
+        for batch in iterate_minibatches(X_train, Y_train, batch_size, shuffle=True, augment=True, downsample=ds):
             inputs, targets = batch 
             bts = time.time()
             err = train_fn(inputs, targets)
@@ -131,7 +178,7 @@ def main(num_epochs=40, lr=0.01, batch_size=8):
 
     # Save
     np.savez('./data/' + name +'_epoch_%i.npz' % num_epochs, *lasagne.layers.get_all_param_values(network))
-    np.save('./data/' + name + '_loss.npy', np.array(train_losses))
+    np.save('./data/' + name + '_loss_epoch_' + str(num_epochs) + '.npy', np.array(train_losses))
 
 
 if __name__ == '__main__':

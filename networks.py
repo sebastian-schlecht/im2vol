@@ -40,8 +40,7 @@ def vnet(input_var=None):
     l_pool_3_2 = PoolLayer(l_conv_3_2, pool_size=(2, 2))
 
     # Bottleneck
-    l_flat = FlattenLayer(l_pool_3_2)
-    l_fc_1 = DenseLayer(l_flat, 4096)
+    l_fc_1 = DenseLayer(l_pool_3_2, 4096)
     l_fc_2 = DenseLayer(l_fc_1, 19200)
     l_rs = ReshapeLayer(l_fc_2, (-1, 64, 15, 20))
 
@@ -133,14 +132,14 @@ def d_rs_stack_1(input_var=None, n=3):
 
     l = PoolLayer(l, pool_size=(2, 2))
 
-    l = DenseLayer(
+    l = batch_norm(DenseLayer(
             l, num_units=4096,
             W=lasagne.init.HeNormal(),
-            nonlinearity=None)
-    l = DenseLayer(
+            nonlinearity=None))
+    l = batch_norm(DenseLayer(
             l, num_units=19200,
             W=lasagne.init.HeNormal(),
-            nonlinearity=None)
+            nonlinearity=None))
 
     l_rs = ReshapeLayer(l, (-1, 64, 15, 20))
 
@@ -156,9 +155,63 @@ def d_rs_stack_1(input_var=None, n=3):
     l_conv_2_4 = batch_norm(ConvLayer(l_conv_2_3, num_filters=64, filter_size=(5, 5), stride=(1, 1), nonlinearity=rectify, pad=2, W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
     l_conv_2_5 = batch_norm(ConvLayer(l_conv_2_4, num_filters=1, filter_size=(5, 5), stride=(1, 1), nonlinearity=rectify, pad=2, W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
 
-    l_up_2 = Upscale2DLayer(l_conv_2_5, 2)
+    return l_in , l_conv_2_5
 
-    return l_up_2
+
+def d_rs_stack_2(input_layer, prev_stack_out,n=3):
+    
+    # create a residual learning building block with two stacked 3x3 convlayers as in paper
+    def residual_block_s2(l):
+        stack_1 = batch_norm(ConvLayer(l, num_filters=64, filter_size=(5,5), stride=(1, 1), nonlinearity=rectify, pad=2, W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
+        stack_2 = batch_norm(ConvLayer(stack_1, num_filters=64, filter_size=(5,5), stride=(1,1), nonlinearity=None, pad=2, W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
+
+       
+        block = NonlinearityLayer(ElemwiseSumLayer([stack_2, l]),nonlinearity=rectify)
+
+        return block
+    
+    
+    
+    
+    
+    
+    up_prev = Upscale2DLayer(prev_stack_out, 2)
+    l_conv_3_1 = ConvLayer(input_layer, num_filters=63, filter_size=(9, 9), stride=(2, 2), nonlinearity=rectify, pad=4, W=lasagne.init.HeNormal(gain='relu'),b=lasagne.init.Constant(0.), flip_filters=False)
+    l_cat_3 = ConcatLayer([l_conv_3_1, up_prev])
+
+    
+    # Residual layes
+    l = l_cat_3
+    # First stack
+    for _ in range(1,n):
+        l = residual_block_s2(l)
+    # Second stack
+    for _ in range(1,n):
+        l = residual_block_s2(l)
+    # Third stack
+    for _ in range(1,n):
+        l = residual_block_s2(l)
+    
+    # large Stack 3
+    l = Upscale2DLayer(l, 2)
+    
+    # New convs from original image
+    l_conv_4_1 = ConvLayer(input_layer, num_filters=64, filter_size=(5, 5), stride=(1, 1), nonlinearity=rectify, pad=2, W=lasagne.init.HeNormal(gain='relu'),b=lasagne.init.Constant(0.), flip_filters=False)
+    l_cat_4 = ConcatLayer([l_conv_4_1, l])
+    l = batch_norm(ConvLayer(l_cat_4, num_filters=64, filter_size=(5, 5), stride=(1, 1), nonlinearity=rectify, pad=2, W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
+    # First stack
+    for _ in range(1,n):
+        l = residual_block_s2(l)
+    # Second stack
+    for _ in range(1,n):
+        l = residual_block_s2(l)
+    # Third stack
+    for _ in range(1,n):
+        l = residual_block_s2(l)
+  
+    l = batch_norm(ConvLayer(l, num_filters=1, filter_size=(5, 5), stride=(1, 1), nonlinearity=rectify, pad=2, W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
+    
+    return l
 
 
 
