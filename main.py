@@ -54,7 +54,7 @@ def load_data():
     return (x_train, y_train)
 
 
-def main(num_epochs=100, lr=0.1, batch_size=4):
+def main(num_epochs=300, lr=0.01, batch_size=8):
     print "Building network"
     input_var = T.tensor4('inputs')
     target_var = T.tensor3('targets')
@@ -82,7 +82,7 @@ def main(num_epochs=100, lr=0.1, batch_size=4):
             print "Loading model weights %s" % model
             with np.load(model) as f:
                 param_values = [f['arr_%d' % i] for i in range(len(f.files))]
-                lasagne.layers.set_all_param_values(network, param_values)
+            lasagne.layers.set_all_param_values(network, param_values)
         
     
     elif learn_stack == 2:
@@ -90,23 +90,20 @@ def main(num_epochs=100, lr=0.1, batch_size=4):
         in_, stack_1 = d_rs_stack_1(input_var)
         params_1 = lasagne.layers.get_all_params(stack_1, trainable=True)
         layers_1 = lasagne.layers.get_all_layers(stack_1)
-        # Load model weights
-        if model is not None:
-            print "Loading model weights %s" % model
-            with np.load(model) as f:
-                param_values = [f['arr_%d' % i] for i in range(len(f.files))]
-                lasagne.layers.set_all_param_values(stack_1, param_values)
+        
         
         # Create stack 2
-        stack_2 = d_rs_stack_2(in_, stack_1)
+        stack_2 = d_rs_stack_2(input_layer=in_, prev=stack_1)
         params_2 = lasagne.layers.get_all_params(stack_2, trainable=True)
         layers_2 = lasagne.layers.get_all_layers(stack_2)
         
         layers_top = [l for l in layers_2 if l not in layers_1]
-        # Get output
-        prediction = lasagne.layers.get_output(stack_2)
+        
         # Fix BN gamma and beta for stack 1
         _ = lasagne.layers.get_output(stack_1, deterministic=True)
+        # Get output
+        prediction = lasagne.layers.get_output(stack_2)
+        
         # Compute loss
         loss = spatial_gradient(prediction, target_reshaped)
         l2_penalty = lasagne.regularization.regularize_layer_params(layers_top, lasagne.regularization.l2) * 0.0001
@@ -114,9 +111,16 @@ def main(num_epochs=100, lr=0.1, batch_size=4):
         sh_lr = theano.shared(lasagne.utils.floatX(lr))
         # Only collect stack 2 weights for updates
         params = [param for param in params_2 if param not in params_1]
-        # TODO Add L2 penalty
+        
         updates = lasagne.updates.nesterov_momentum(cost, params, learning_rate=sh_lr, momentum=0.9)
         network = stack_2
+        # Load model weights
+        if model is not None:
+            
+            with np.load(model) as f:
+                param_values = [f['arr_%d' % i] for i in range(len(f.files))]
+            print "Setting model weights %s" % model
+            lasagne.layers.set_all_param_values(stack_1, param_values)
         
     
     
@@ -152,7 +156,7 @@ def main(num_epochs=100, lr=0.1, batch_size=4):
         if learn_stack == 1:
             ds = 4
         elif learn_stack == 2:
-            ds = 1
+            ds = 2
         for batch in iterate_minibatches(X_train, Y_train, batch_size, shuffle=True, augment=True, downsample=ds):
             inputs, targets = batch 
             bts = time.time()

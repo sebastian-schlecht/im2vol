@@ -158,7 +158,19 @@ def d_rs_stack_1(input_var=None, n=3):
     return l_in , l_conv_2_5
 
 
-def d_rs_stack_2(input_layer, prev_stack_out,n=3):
+def d_rs_stack_2(input_layer, prev):
+    up_prev = Upscale2DLayer(prev, 2)
+    l_conv_3_1 = batch_norm(ConvLayer(input_layer, num_filters=96, filter_size=(9, 9), stride=(2, 2), nonlinearity=rectify, pad=4, W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
+    l_cat_3 = ConcatLayer([l_conv_3_1, up_prev])
+    
+    conv_3_2 = batch_norm(ConvLayer(l_cat_3, num_filters=64, filter_size=(5, 5), stride=(1, 1), nonlinearity=rectify, pad=2, W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
+    conv_3_3 = batch_norm(ConvLayer(conv_3_2, num_filters=64, filter_size=(5, 5), stride=(1, 1), nonlinearity=rectify, pad=2, W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
+    conv_3_4 = batch_norm(ConvLayer(conv_3_3, num_filters=64, filter_size=(5, 5), stride=(1, 1), nonlinearity=rectify, pad=2, W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
+    conv_3_5 = batch_norm(ConvLayer(conv_3_4, num_filters=64, filter_size=(5, 5), stride=(1, 1), nonlinearity=rectify, pad=2, W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
+    conv_3_6 = ConvLayer(conv_3_5, num_filters=1, filter_size=(5, 5), stride=(1, 1), nonlinearity=rectify, pad=2, W=lasagne.init.HeNormal(gain='relu'), flip_filters=False)
+    return conv_3_6
+
+def d_rs_stack_2_residual(input_layer, prev_stack_out,n=3):
     
     # create a residual learning building block with two stacked 3x3 convlayers as in paper
     def residual_block_s2(l):
