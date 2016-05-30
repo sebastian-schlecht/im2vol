@@ -7,10 +7,10 @@ import h5py
 import time
 
 DATASET = "./data/nyu_depth_combined_vnet2"
-name = "rs_stack_2_spatial_grad"
+name = "rs_stack_1_tukey"
 model = "./data/rs_stack_1_spatial_grad_epoch_250.npz"
-learn_stack = 2
-# model = None
+learn_stack = 1
+model = None
 
 from networks import vnet, d_rs_stack_1, d_rs_stack_2
 from losses import scale_invariant_error, tukey_biweight, spatial_gradient, mse
@@ -54,7 +54,9 @@ def load_data():
     return (x_train, y_train)
 
 
-def main(num_epochs=300, lr=0.01, batch_size=8):
+def main(num_epochs=100, lr=0.01, batch_size=8):
+    # loss_func = spatial_gradient
+    loss_func = tukey_biweight
     print "Building network"
     input_var = T.tensor4('inputs')
     target_var = T.tensor3('targets')
@@ -67,8 +69,7 @@ def main(num_epochs=300, lr=0.01, batch_size=8):
         prediction = lasagne.layers.get_output(network)
 
         # Spatial grad / biweight / scale invariant error
-        # loss = scale_invariant_error(predictions=prediction, targets=target_reshaped)
-        loss = spatial_gradient(prediction, target_reshaped)
+        loss = loss_func(prediction, target_reshaped)
         # Add some L2
         all_layers = lasagne.layers.get_all_layers(network)
         l2_penalty = lasagne.regularization.regularize_layer_params(all_layers, lasagne.regularization.l2) * 0.0001
@@ -100,12 +101,12 @@ def main(num_epochs=300, lr=0.01, batch_size=8):
         layers_top = [l for l in layers_2 if l not in layers_1]
         
         # Fix BN gamma and beta for stack 1
-        _ = lasagne.layers.get_output(stack_1, deterministic=True)
+        #_ = lasagne.layers.get_output(stack_1, deterministic=True)
         # Get output
         prediction = lasagne.layers.get_output(stack_2)
         
         # Compute loss
-        loss = spatial_gradient(prediction, target_reshaped)
+        loss = loss_func(prediction, target_reshaped)
         l2_penalty = lasagne.regularization.regularize_layer_params(layers_top, lasagne.regularization.l2) * 0.0001
         cost = loss + l2_penalty
         sh_lr = theano.shared(lasagne.utils.floatX(lr))
@@ -116,11 +117,9 @@ def main(num_epochs=300, lr=0.01, batch_size=8):
         network = stack_2
         # Load model weights
         if model is not None:
-            
             with np.load(model) as f:
                 param_values = [f['arr_%d' % i] for i in range(len(f.files))]
-            print "Setting model weights %s" % model
-            lasagne.layers.set_all_param_values(stack_1, param_values)
+            lasagne.layers.set_all_param_values(layers_1, param_values)
         
     
     
@@ -182,7 +181,7 @@ def main(num_epochs=300, lr=0.01, batch_size=8):
 
     # Save
     np.savez('./data/' + name +'_epoch_%i.npz' % num_epochs, *lasagne.layers.get_all_param_values(network))
-    np.save('./data/' + name + '_loss_epoch_' + str(num_epochs) + '.npy', np.array(train_losses))
+    np.save('./data/' + name + '_epoch_' + str(num_epochs) + '_loss.npy', np.array(train_losses))
 
 
 if __name__ == '__main__':
