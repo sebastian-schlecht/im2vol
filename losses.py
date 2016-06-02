@@ -31,7 +31,7 @@ def tukey_biweight(predictions, targets, c=4.685, s=1.4826):
     n_valid = T.sum(mask, axis=1)
     # Apply mask and log transform
     m_pred = pred * mask
-    m_t = T.switch(mask, T.log(target), 0)
+    m_t = T.switch(mask, target, 0)
 
     def median(tensor):
         """
@@ -57,8 +57,8 @@ def tukey_biweight(predictions, targets, c=4.685, s=1.4826):
 
     # Residual
     r_i = (m_pred - m_t)
-    r_i = r_i / (s * mad(r_i))
-
+    # r_i = r_i / (s * mad(r_i))
+    r_i = r_i / r_i.std()
     # Compute the masking vectors
     tukey_mask = T.gt(T.abs_(r_i), c)
 

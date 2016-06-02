@@ -7,12 +7,12 @@ import h5py
 import time
 
 DATASET = "./data/nyu_depth_combined_vnet2"
-name = "rs_stack_1_tukey"
-model = "./data/rs_stack_1_spatial_grad_epoch_250.npz"
-learn_stack = 1
+name = "resunet"
+#model = "./data/rs_stack_1_spatial_grad_epoch_250.npz"
+learn_stack = 0
 model = None
 
-from networks import vnet, d_rs_stack_1, d_rs_stack_2
+from networks import vnet, d_rs_stack_1, d_rs_stack_2, residual_unet
 from losses import scale_invariant_error, tukey_biweight, spatial_gradient, mse
 
 
@@ -54,18 +54,18 @@ def load_data():
     return (x_train, y_train)
 
 
-def main(num_epochs=100, lr=0.01, batch_size=8):
+def main(num_epochs=200, lr=0.01, batch_size=16):
     # loss_func = spatial_gradient
-    loss_func = tukey_biweight
+    loss_func = spatial_gradient
     print "Building network"
     input_var = T.tensor4('inputs')
     target_var = T.tensor3('targets')
     # Reshape to enable usage in loss function
     target_reshaped = target_var.dimshuffle((0, "x", 1, 2))
     
-    if learn_stack == 1:
+    if learn_stack == 1 or learn_stack == 0:
         
-        in_, network = d_rs_stack_1(input_var=input_var)
+        network = residual_unet(input_var=input_var)
         prediction = lasagne.layers.get_output(network)
 
         # Spatial grad / biweight / scale invariant error
