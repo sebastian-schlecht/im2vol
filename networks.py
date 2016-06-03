@@ -112,6 +112,93 @@ def vnet(input_var=None):
     return l_conv_8_1
 
 
+
+def d_rs_stack_1(input_var=None, n=3):
+    l_in = InputLayer(shape=(None, 3, 240, 320), input_var=input_var)
+
+    # create a residual learning building block with two stacked 3x3 convlayers as in paper
+    def residual_block(l, increase_dim=False, projection=False):
+        input_num_filters = l.output_shape[1]
+        if increase_dim:
+            first_stride = (2,2)
+            out_num_filters = input_num_filters*2
+        else:
+            first_stride = (1,1)
+            out_num_filters = input_num_filters
+
+        stack_1 = batch_norm(ConvLayer(l, num_filters=out_num_filters, filter_size=(3,3), stride=first_stride, nonlinearity=rectify, pad='same', W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
+        stack_2 = batch_norm(ConvLayer(stack_1, num_filters=out_num_filters, filter_size=(3,3), stride=(1,1), nonlinearity=None, pad='same', W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
+
+        # add shortcut connections
+        if increase_dim:
+            if projection:
+                # projection shortcut, as option B in paper
+                projection = batch_norm(ConvLayer(l, num_filters=out_num_filters, filter_size=(1,1), stride=(2,2), nonlinearity=None, pad='same', b=None, flip_filters=False))
+                block = NonlinearityLayer(ElemwiseSumLayer([stack_2, projection]),nonlinearity=rectify)
+            else:
+                # identity shortcut, as option A in paper
+                identity = ExpressionLayer(l, lambda X: X[:, :, ::2, ::2], lambda s: (s[0], s[1], s[2]//2, s[3]//2))
+                padding = PadLayer(identity, [out_num_filters//4,0,0], batch_ndim=1)
+                block = NonlinearityLayer(ElemwiseSumLayer([stack_2, padding]),nonlinearity=rectify)
+        else:
+            block = NonlinearityLayer(ElemwiseSumLayer([stack_2, l]),nonlinearity=rectify)
+
+        return block
+
+    # first layer,
+    l = batch_norm(ConvLayer(l_in, num_filters=16, filter_size=(3,3), stride=(1,1), nonlinearity=rectify, pad='same', W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
+
+    # first stack of residual blocks,
+    for _ in range(n):
+        l = residual_block(l)
+
+    # second stack of residual blocks,
+    l = residual_block(l, increase_dim=True)
+    for _ in range(1,n):
+        l = residual_block(l)
+
+    # third stack of residual blocks,
+    l = residual_block(l, increase_dim=True)
+    for _ in range(1,n):
+        l = residual_block(l)
+
+    l = residual_block(l, increase_dim=True)
+    for _ in range(1,n):
+        l = residual_block(l)
+    l = residual_block(l, increase_dim=True)
+    for _ in range(1,n):
+        l = residual_block(l)
+
+    l = PoolLayer(l, pool_size=(2, 2))
+
+    l = batch_norm(DenseLayer(
+            l, num_units=4096,
+            W=lasagne.init.HeNormal(),
+            nonlinearity=None))
+    l = batch_norm(DenseLayer(
+            l, num_units=19200,
+            W=lasagne.init.HeNormal(),
+            nonlinearity=None))
+
+    l_rs = ReshapeLayer(l, (-1, 64, 15, 20))
+
+    l_up_1 = Upscale2DLayer(l_rs, 4)
+
+    l_conv_2_1 = ConvLayer(l_in, num_filters=96, filter_size=(9, 9), stride=(2, 2), nonlinearity=rectify, pad=4, W=lasagne.init.HeNormal(gain='relu'), flip_filters=False)
+    l_pool_2_1 = PoolLayer(l_conv_2_1, pool_size=(2, 2))
+
+    l_cat_2 = ConcatLayer([l_pool_2_1, l_up_1])
+
+    l_conv_2_2 = batch_norm(ConvLayer(l_cat_2, num_filters=64, filter_size=(5, 5), stride=(1, 1), nonlinearity=rectify, pad=2, W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
+    l_conv_2_3 = batch_norm(ConvLayer(l_conv_2_2, num_filters=64, filter_size=(5, 5), stride=(1, 1), nonlinearity=rectify, pad=2, W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
+    l_conv_2_4 = batch_norm(ConvLayer(l_conv_2_3, num_filters=64, filter_size=(5, 5), stride=(1, 1), nonlinearity=rectify, pad=2, W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
+    l_conv_2_5 = batch_norm(ConvLayer(l_conv_2_4, num_filters=1, filter_size=(5, 5), stride=(1, 1), nonlinearity=rectify, pad=2, W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
+
+    return l_conv_2_5
+
+
+
+
 def residual_unet(input_var=None, n=3, un=1, connectivity=0):
     """
     Parametrized residual unet in lasagne for depth prediction
@@ -148,7 +235,7 @@ def residual_unet(input_var=None, n=3, un=1, connectivity=0):
         if pad:
             padding = "same"
             proj_filter = (1, 1)
-            conv_filter = (3, 3)
+            conv_filter = (1, 1)
         else:
             padding = 0
             # Odd filters here but works to get the dimensions right
@@ -160,7 +247,7 @@ def residual_unet(input_var=None, n=3, un=1, connectivity=0):
             ConvLayer(l, num_filters=out_num_filters, filter_size=conv_filter, stride=(1, 1), nonlinearity=rectify,
                       pad=padding, W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
         stack_2 = batch_norm(
-            ConvLayer(stack_1, num_filters=out_num_filters, filter_size=(3, 3), stride=(1, 1), nonlinearity=None,
+            ConvLayer(stack_1, num_filters=out_num_filters, filter_size=(1, 1), stride=(1, 1), nonlinearity=None,
                       pad='same', W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
 
         # add shortcut connections
@@ -206,13 +293,13 @@ def residual_unet(input_var=None, n=3, un=1, connectivity=0):
         bottleneck_filters = out_num_filters // 4
         # We use a bottleneck approach here!
         stack_1 = batch_norm(
-            ConvLayer(l, num_filters=bottleneck_filters, filter_size=(3, 3), stride=first_stride, nonlinearity=rectify,
+            ConvLayer(l, num_filters=bottleneck_filters, filter_size=(1, 1), stride=first_stride, nonlinearity=rectify,
                       pad='same', W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
         stack_2 = batch_norm(
-            ConvLayer(stack_1, num_filters=bottleneck_filters, filter_size=(3, 3), stride=(1, 1), nonlinearity=None,
+            ConvLayer(stack_1, num_filters=bottleneck_filters, filter_size=(3, 3), stride=(1, 1), nonlinearity=rectify,
                       pad='same', W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
-        stack_2 = batch_norm(
-            ConvLayer(stack_1, num_filters=out_num_filters, filter_size=(3, 3), stride=(1, 1), nonlinearity=None,
+        stack_3 = batch_norm(
+            ConvLayer(stack_2, num_filters=out_num_filters, filter_size=(1, 1), stride=(1, 1), nonlinearity=None,
                       pad='same', W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
 
         # add shortcut connections
@@ -222,14 +309,14 @@ def residual_unet(input_var=None, n=3, un=1, connectivity=0):
                 projection = batch_norm(
                     ConvLayer(l, num_filters=out_num_filters, filter_size=(1, 1), stride=(2, 2), nonlinearity=None,
                               pad='same', b=None, flip_filters=False))
-                block = NonlinearityLayer(ElemwiseSumLayer([stack_2, projection]), nonlinearity=rectify)
+                block = NonlinearityLayer(ElemwiseSumLayer([stack_3, projection]), nonlinearity=rectify)
             else:
                 # identity shortcut, as option A in paper
                 identity = ExpressionLayer(l, lambda X: X[:, :, ::2, ::2], lambda s: (s[0], s[1], s[2] // 2, s[3] // 2))
                 padding = PadLayer(identity, [out_num_filters // 4, 0, 0], batch_ndim=1)
-                block = NonlinearityLayer(ElemwiseSumLayer([stack_2, padding]), nonlinearity=rectify)
+                block = NonlinearityLayer(ElemwiseSumLayer([stack_3, padding]), nonlinearity=rectify)
         else:
-            block = NonlinearityLayer(ElemwiseSumLayer([stack_2, l]), nonlinearity=rectify)
+            block = NonlinearityLayer(ElemwiseSumLayer([stack_3, l]), nonlinearity=rectify)
 
         return block
 
@@ -237,18 +324,18 @@ def residual_unet(input_var=None, n=3, un=1, connectivity=0):
     l_in = InputLayer(shape=(None, 3, 240, 320), input_var=input_var)
 
     # First batch normalized layer
-    first_kernel = 32
+    first_kernel = 64
     l = batch_norm(
-        ConvLayer(l_in, num_filters=first_kernel, filter_size=(3, 3), stride=(1, 1), nonlinearity=rectify, pad="same",
+        ConvLayer(l_in, num_filters=first_kernel, filter_size=(5, 5), stride=(2, 2), nonlinearity=rectify, pad=2,
                   W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
-
+    print l.output_shape
     # First residual block
     for _ in range(n):
         l = residual_block(l)
     # Save reference before downsampling
     l_1 = l
 
-    # second stack of residual blocks, output is 128x120x160
+    # second stack of residual blocks, output is 256x60x80
     l = residual_block(l, increase_dim=True)
     for _ in range(1, n):
         l = residual_block(l)
@@ -256,7 +343,7 @@ def residual_unet(input_var=None, n=3, un=1, connectivity=0):
     # Save reference
     l_2 = l
 
-    # third stack of residual blocks, output is 256x60x80
+    # third stack of residual blocks, output is 512x40x80
     l = residual_block(l, increase_dim=True)
     for _ in range(1, n):
         l = residual_block(l)
@@ -270,16 +357,10 @@ def residual_unet(input_var=None, n=3, un=1, connectivity=0):
     # Save reference
     l_4 = l
     # fifth stack of residual blocks, output is 1024x15x20
-    l = residual_block(l, increase_dim=True)
-    for _ in range(1, n):
-        l = residual_block(l)
-    l_5 = l
-
-    # sixth stack of residual blocks, output is 2048x8x10, use a projection to account for lost pixels
     l = residual_block(l, increase_dim=True, projection=True)
     for _ in range(1, n):
         l = residual_block(l)
-    l_6 = l
+    l_5 = l
 
     # Expansive path
 
@@ -294,27 +375,27 @@ def residual_unet(input_var=None, n=3, un=1, connectivity=0):
     # Question: Does this make sense or would cropping the first and last pixel row work better?!
     # first expansive block. seventh stack of residuals, output is 512x30x40
     if connectivity > 0:
-        l = ConcatLayer([l_7, l_5])
+        l = ConcatLayer([l_7, l_4])
     l = residual_block_up(l, decrease_dim=True, pad=False)
     for _ in range(1, un):
         l = residual_block(l)
     l_8 = l
     if connectivity > 1:
-        l = ConcatLayer([l_8, l_4])
+        l = ConcatLayer([l_8, l_3])
     # residual block #8, output is 256x60x80
     l = residual_block_up(l, decrease_dim=True)
     for _ in range(1, un):
         l = residual_block(l)
     l_9 = l
     if connectivity > 2:
-        l = ConcatLayer([l_9, l_3])
+        l = ConcatLayer([l_9, l_2])
     # residual block #9, output is 128x120x160
     l = residual_block_up(l, decrease_dim=True)
     for _ in range(1, n):
         l = residual_block(l)
     l_10 = l
     if connectivity > 3:
-        l = ConcatLayer([l_10, l_2])
+        l = ConcatLayer([l_10, l_1])
 
     # final convolutions
     l = batch_norm(ConvLayer(l, num_filters=64, filter_size=(3, 3), stride=(1, 1), nonlinearity=rectify, pad="same",
