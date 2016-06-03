@@ -5,45 +5,61 @@ import Queue
 import theano
 import theano.tensor as T
 import h5py
-import time
+import time, math
 
-DATASET_TRAIN = "./data/nyu_depth_combined_vnet2"
-DATASET_VAL = "./data/nyu_depth_combined_vnet2"
-name = "resunet"
-model = None
-synced_prefetching = True
-
-
-q = Queue.Queue(maxsize=20)
-
-from networks import  residual_unet
+from networks import  residual_unet, debug_net
 from losses import spatial_gradient
+
+# Our shuffled dataset. Important that we store it in contigous blocks, and not chunks to have const. speed on variable batchsizes
+DATASET_TRAIN = "/home/sebastianschlecht/depth_data/nyu_v1_shuffled"
+# Validation dataset that we keep in memory
+DATASET_VAL = "/home/sebastianschlecht/depth_data/nyu_depth_v2_resized"
+# Name used for saving losses and models
+name = "resunet"
+# Init with model params
+model = None
+# Synced mode for prefetching. Should stay True, otherwise this script will break
+synced_prefetching = True
+# Threadsafe queue for prefetching
+q = Queue.Queue(maxsize=20)
 
 
 def prefetch_proc(bs):
     """
-    Open handle to DB and prefetch data
-    :return:
+    Open handle to DB and prefetch data. Also do random online augmention
+    :return: None - Loops infinitely
     """
     f = h5py.File(DATASET_TRAIN + ".hdf5")
     length = f["images"].shape[0]
-    perm = np.random.permutation(length)
     idx = 0
     # Subtract mean already and normalize std
     m = np.load(DATASET_TRAIN + ".npy").astype(np.float32)
     while True:
-        pp = perm[idx:idx+bs]
-        pp = np.sort(pp).tolist()
-        images = np.array(f["images"][pp])
-        labels = np.array(f["depths"][pp])
-
+        upper = min(idx+bs, length)
+        images = np.array(f["images"][idx:upper]).copy()
+        labels = np.array(f["depths"][idx:upper]).copy()
+                
         for i in range(len(images)):
             images[i] = (images[i] - m) / 68.
+            # Flip horizontally with probability 0.5
+            p = np.random.randint(2)
+            if p > 0:
+                images[i] = images[i, :, :, ::-1]
+                labels[i] = labels[i, :, ::-1]
+
+            # RGB we mult with a random value between 0.8 and 1.2
+            r = np.random.randint(80,121) / 100.
+            g = np.random.randint(80,121) / 100.
+            b = np.random.randint(80,121) / 100.
+            images[i, 0] = images[i, 0] * r
+            images[i, 1] = images[i, 1] * g
+            images[i, 2] = images[i, 2] * b
+                
+
         q.put((images, labels), block=True)
 
         if idx + bs > length:
             idx = 0
-            perm = np.random.permutation(length)
         else:
             idx += bs
 
@@ -70,13 +86,17 @@ def iterate_minibatches_synchronized(inputlen, targetlen, batchsize, shuffle=Tru
         # Random crops
         h = 240
         w = 320
-        inputs, targets = q.get(block=True)
+
+        while True:
+            try:
+                inputs, targets = q.get(block=True,timeout=0.05)
+                break
+            except Queue.Empty:
+                print "Prefetch Queue Empty"
         cy = np.random.randint(inputs.shape[2] - h, size=1)
         cx = np.random.randint(inputs.shape[3] - w, size=1)
-
-        input_cropped = inputs[:, :, cy:cy+h, cx:cx+w].copy()
-        target_cropped = targets[:, cy:cy+h:downsample, cx:cx+w:downsample].copy()
-
+        input_cropped = inputs[:, :, cy:cy+h, cx:cx+w]
+        target_cropped = targets[:, cy:cy+h:downsample, cx:cx+w:downsample]
         yield input_cropped, target_cropped
 
 
@@ -114,11 +134,11 @@ def load_val_data():
     m = np.load(DATASET_VAL + ".npy").astype(np.float32)
     for i in range(len(x_train)):
         x_train[i] = (x_train[i] - m) / 68.
-
+    f.close()
     return (x_train, y_train)
 
 
-def main(num_epochs=200, lr=0.01, batch_size=16):
+def main(num_epochs=5, lr=0.01, batch_size=16):
     # loss_func = spatial_gradient
     loss_func = spatial_gradient
     print "Building network"
@@ -129,13 +149,16 @@ def main(num_epochs=200, lr=0.01, batch_size=16):
     
     network = residual_unet(input_var=input_var)
     prediction = lasagne.layers.get_output(network)
+    test_prediction = lasagne.layers.get_output(network, deterministic=True)
 
     # Spatial grad / biweight / scale invariant error
     loss = loss_func(prediction, target_reshaped)
+    val_loss = loss_func(test_prediction, target_reshaped)
     # Add some L2
     all_layers = lasagne.layers.get_all_layers(network)
     l2_penalty = lasagne.regularization.regularize_layer_params(all_layers, lasagne.regularization.l2) * 0.0001
     cost = loss + l2_penalty
+
 
     params = lasagne.layers.get_all_params(network, trainable=True)
     sh_lr = theano.shared(lasagne.utils.floatX(lr))
@@ -150,7 +173,7 @@ def main(num_epochs=200, lr=0.01, batch_size=16):
     print "Compiling network"
     # We want to have the main loss only, not l2 values
     train_fn = theano.function([input_var, target_var], loss, updates=updates)
-    val_fn = theano.function([input_var, target_var], [prediction, loss])
+    val_fn = theano.function([input_var, target_var], [prediction, val_loss])
     f = h5py.File(DATASET_TRAIN + ".hdf5")
     length = f["images"].shape[0]
     f.close()
@@ -160,6 +183,8 @@ def main(num_epochs=200, lr=0.01, batch_size=16):
     x_val, y_val = load_val_data()
     print "Starting training"
     train_losses = []
+    val_losses = []
+    val_errors = []
     for epoch in range(num_epochs):
         if epoch == num_epochs // 2:
             print "Decreasing LR"
@@ -174,49 +199,65 @@ def main(num_epochs=200, lr=0.01, batch_size=16):
         print "Training Epoch %i" % (epoch + 1)
 
         # Downsample factor
-        ds = 1
+        ds = 2
         # Train for one epoch
         for batch in iterate_minibatches_synchronized(length, length, batch_size, shuffle=True, augment=True, downsample=ds):
-            inputs, targets = batch 
+            inputs, targets = batch
+            inputs = inputs.copy()
+            target = targets.copy()
             bts = time.time()
             err = train_fn(inputs, targets)
             bte = time.time()
             bt += (bte - bts)
             bidx += 1
-            if bidx == 20 and epoch == 0:
+            if bidx == 60 and epoch == 0:
                 tpb = bt / bidx
                 print "Average time per forward/backward pass: " + str(tpb)
                 eta = time.time() + num_epochs * (tpb * (length/batch_size))
                 localtime = time.asctime( time.localtime(eta) )
                 print "ETA: ", localtime
-            
+
             train_losses.append(err)
             train_err += err
             train_batches += 1
+            # Save intermedia train loss
+            if bidx % 100 == 0:
+                np.save('./data/' + name + '_epoch_' + str(num_epochs) + '_loss_train.npy', np.array(train_losses))
+
 
 
         # Validate model
+        print "validating"
         v_losses = []
         v_mse = []
-        for i in range(x_val):
-            x_in = x_val[i,:,9:9+240:ds, 12:12+320:ds]
-            y_in = y_val[i,9:9+240:ds, 12:12+320:ds]
+        indices = np.arange(x_val.shape[0])
+        for i in range(0,x_val.shape[0], batch_size):
+            excerpt = indices[i:i+batch_size]
+            x_in = x_val[excerpt,:,9:9+240:ds, 12:12+320:ds]
+            y_in = y_val[excerpt,9:9+240:ds, 12:12+320:ds]
             v_pred, v_loss = val_fn(x_in, y_in)
-            current_se = (v_pred - y_val[i]) ** 2
-            v_mse.append(current_se)
-            v_losses.append(v_losses)
+            current_se = (np.exp(v_pred) - y_in) ** 2
+            # calc current mse for this minibatch
+            v_mse.append(current_se.mean())
+            v_losses.append(v_loss)
         val_mse = np.array(v_mse).mean()
         val_loss = np.array(v_losses).mean()
+        val_losses.append(val_loss)
+        val_errors.append(val_mse)
         # Then we print the results for this epoch:
         print("Epoch {} of {} took {:.3f}s".format(
             epoch + 1, num_epochs, time.time() - start_time))
         print("  training loss:\t\t{:.6f}".format(train_err / train_batches))
         print("  val loss:\t\t{:.6f}".format(val_loss))
         print("  val mse:\t\t{:.6f}".format(val_mse))
-
+        # Store intermediate val loss
+        np.save('./data/' + name + '_epoch_' + str(num_epochs) + '_loss_val.npy', np.array(val_losses))
+        np.save('./data/' + name + '_epoch_' + str(num_epochs) + '_errors_val.npy', np.array(val_errors))
+    print "Saving data"
     # Save
     np.savez('./data/' + name +'_epoch_%i.npz' % num_epochs, *lasagne.layers.get_all_param_values(network))
-    np.save('./data/' + name + '_epoch_' + str(num_epochs) + '_loss.npy', np.array(train_losses))
+    np.save('./data/' + name + '_epoch_' + str(num_epochs) + '_loss_train.npy', np.array(train_losses))
+    
 
 
 if __name__ == '__main__':
