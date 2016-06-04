@@ -7,7 +7,7 @@ import theano.tensor as T
 import h5py
 import time, math
 
-from networks import  residual_unet, debug_net, d_rs_stack_1
+from networks import  residual_unet,residual_unet_old, debug_net
 from losses import spatial_gradient, berhu
 
 # Our shuffled dataset. Important that we store it in contigous blocks, and not chunks to have const. speed on variable batchsizes
@@ -15,7 +15,7 @@ DATASET_TRAIN = "/home/sebastianschlecht/depth_data/nyu_v1_shuffled"
 
 # Validation dataset that we keep in memory
 DATASET_VAL = "/home/sebastianschlecht/depth_data/nyu_depth_v2_resized"
-DATASET_TRAIN = DATASET_VAL
+# DATASET_TRAIN=DATASET_VAL
 # Name used for saving losses and models
 name = "resunet"
 # Init with model params
@@ -24,8 +24,18 @@ model = None
 synced_prefetching = True
 # Threadsafe queue for prefetching
 q = Queue.Queue(maxsize=20)
+# Validate during training
+validate = True
+# Use local assertions
+assert_local = True
 
-validate = False
+def c_assert(condition):
+    """
+    Conditional assert
+    """
+    if assert_local:
+        assert condition
+
 
 
 def prefetch_proc(bs):
@@ -40,10 +50,10 @@ def prefetch_proc(bs):
     m = np.load(DATASET_TRAIN + ".npy").astype(np.float32)
     while True:
         upper = min(idx+bs, length)
-        images = np.array(f["images"][idx:upper]).copy()
-        labels = np.array(f["depths"][idx:upper]).copy()
+        images = np.array(f["images"][idx:upper]).astype(np.float32)
+        labels = np.array(f["depths"][idx:upper]).astype(np.float32)
                 
-        for i in range(len(images)):
+        for i in range(images.shape[0]):
             images[i] = (images[i] - m) / 70.933385161726605
             # Flip horizontally with probability 0.5
             p = np.random.randint(2)
@@ -59,13 +69,16 @@ def prefetch_proc(bs):
             images[i, 1] = images[i, 1] * g
             images[i, 2] = images[i, 2] * b
                 
-
+        # Shuffle
+        perm = np.arange(images.shape[0])
+        np.random.shuffle(perm)
+        images = images[perm]
+        labels = labels[perm]
         q.put((images, labels), block=True)
 
         if idx + bs > length:
             idx = 0
         else:
-            pass
             idx += bs
 
 
@@ -86,7 +99,7 @@ def iterate_minibatches_synchronized(inputlen, targetlen, batchsize, shuffle=Tru
     :param downsample:
     :return:
     """
-    assert inputlen == targetlen
+    c_assert(inputlen == targetlen)
     for start_idx in range(0, inputlen - batchsize + 1, batchsize):
         # Random crops
         h = 240
@@ -98,8 +111,8 @@ def iterate_minibatches_synchronized(inputlen, targetlen, batchsize, shuffle=Tru
                 break
             except Queue.Empty:
                 print "Prefetch Queue Empty"
-        cy = np.random.randint(inputs.shape[2] - h, size=1)
-        cx = np.random.randint(inputs.shape[3] - w, size=1)
+        cy = np.random.randint(inputs.shape[2] - h)
+        cx = np.random.randint(inputs.shape[3] - w)
         input_cropped = inputs[:, :, cy:cy+h, cx:cx+w]
         target_cropped = targets[:, cy:cy+h:downsample, cx:cx+w:downsample]
         yield input_cropped, target_cropped
@@ -120,8 +133,8 @@ def iterate_minibatches(inputs, targets, batchsize, shuffle=True, augment=True, 
         h = 240
         w = 320
 
-        cy = np.random.randint(inputs.shape[2] - h, size=1)
-        cx = np.random.randint(inputs.shape[3] - w, size=1)
+        cy = np.random.randint(inputs.shape[2] - h)
+        cx = np.random.randint(inputs.shape[3] - w)
 
         input_cropped = inputs[excerpt, :, cy:cy+h, cx:cx+w].copy()
         target_cropped = targets[excerpt, cy:cy+h:downsample, cx:cx+w:downsample].copy()
@@ -143,18 +156,17 @@ def load_val_data():
     return (x_train, y_train)
 
 
-def main(num_epochs=5, lr=0.001, batch_size=16):
-    loss_func = spatial_gradient
-    # loss_func = berhu
+def main(num_epochs=15, lr=0.01, batch_size=16):
+    loss_func = berhu
     print "Building network"
     input_var = T.tensor4('inputs')
     target_var = T.tensor3('targets')
     # Reshape to enable usage in loss function
     target_reshaped = target_var.dimshuffle((0, "x", 1, 2))
     
-    network = d_rs_stack_1(input_var=input_var)
+    network = residual_unet(input_var=input_var)
     # Downsample factor
-    ds = 4
+    ds = 2
     
     prediction = lasagne.layers.get_output(network)
     # Spatial grad / biweight / scale invariant error
@@ -180,9 +192,9 @@ def main(num_epochs=5, lr=0.001, batch_size=16):
     train_fn = theano.function([input_var, target_var], loss, updates=updates)
     if validate:
         print "Compiling validation model"
-        test_prediction = lasagne.layers.get_output(network, deterministic=True)
-        val_loss = loss_func(test_prediction, target_reshaped)
-        val_fn = theano.function([input_var, target_var], [test_prediction, val_loss])
+        val_prediction = lasagne.layers.get_output(network, deterministic=True)
+        val_loss = loss_func(val_prediction, target_reshaped)
+        val_fn = theano.function([input_var, target_var], [val_prediction, val_loss])
     
     print "Starting data prefetcher"
     f = h5py.File(DATASET_TRAIN + ".hdf5")
@@ -202,7 +214,7 @@ def main(num_epochs=5, lr=0.001, batch_size=16):
         if epoch == num_epochs // 2:
             print "Decreasing LR"
             sh_lr.set_value(lr / 10)
-        # shuffle training data
+        
         # In each epoch, we do a full pass over the training data:
         train_err = 0
         train_batches = 0
@@ -213,12 +225,14 @@ def main(num_epochs=5, lr=0.001, batch_size=16):
         for batch in iterate_minibatches_synchronized(length, length, batch_size, shuffle=True, augment=True, downsample=ds):
             inputs, targets = batch
             bts = time.time()
+            
+            c_assert(inputs.dtype == np.float32)
+            c_assert(targets.dtype == np.float32)
+            
             err = train_fn(inputs, targets)
             bte = time.time()
             bt += (bte - bts)
             bidx += 1
-            print inputs[0]
-            print targets[0]
             if bidx == 60 and epoch == 0:
                 tpb = bt / bidx
                 print "Average time per forward/backward pass: " + str(tpb)
@@ -245,7 +259,11 @@ def main(num_epochs=5, lr=0.001, batch_size=16):
                 x_in = x_val[excerpt,:,9:9+240, 12:12+320]
                 y_in = y_val[excerpt,9:9+240:ds, 12:12+320:ds]
                 v_pred, v_loss = val_fn(x_in, y_in)
-                current_se = (np.exp(v_pred) - y_in) ** 2
+                y_t = y_in[:,np.newaxis,:,:]
+                
+                c_assert(y_t.shape == v_pred.shape)
+                
+                current_se = (v_pred - y_t) ** 2
                 # calc current mse for this minibatch
                 v_mse.append(current_se.mean())
                 v_losses.append(v_loss)
@@ -268,6 +286,40 @@ def main(num_epochs=5, lr=0.001, batch_size=16):
     np.savez('./data/' + name +'_epoch_%i.npz' % num_epochs, *lasagne.layers.get_all_param_values(network))
     np.save('./data/' + name + '_epoch_' + str(num_epochs) + '_loss_train.npy', np.array(train_losses))
     
+    
+    # Test net with non-deterministic minibatch statistics
+    print "Compiling test model"
+    test_prediction = lasagne.layers.get_output(network, deterministic=False)
+    test_loss = loss_func(test_prediction, target_reshaped)
+    test_fn = theano.function([input_var, target_var], [test_prediction, test_loss])
+    print "Testing"
+    t_losses = []
+    t_mse = []
+    indices = np.arange(x_val.shape[0])
+    # Warump running averages of batch norm units - we feed in the test-set once without updating weights. We only update
+    # the running averages which are computes as '[...].default_updates()' on the shared vars sitting inside the batch_norm layers
+    for i in range(0,x_val.shape[0], batch_size):
+        excerpt = indices[i:i+batch_size]
+        x_in = x_val[excerpt,:,9:9+240, 12:12+320]
+        y_in = y_val[excerpt,9:9+240:ds, 12:12+320:ds]
+        t_pred, t_loss = test_fn(x_in, y_in)
+    for i in range(0,x_val.shape[0], batch_size):
+        excerpt = indices[i:i+batch_size]
+        x_in = x_val[excerpt,:,9:9+240, 12:12+320]
+        y_in = y_val[excerpt,9:9+240:ds, 12:12+320:ds]
+        t_pred, t_loss = test_fn(x_in, y_in)
+        y_t = y_in[:,np.newaxis,:,:]
+
+        c_assert(y_t.shape == t_pred.shape)
+
+        current_se = (t_pred - y_t) ** 2
+        # calc current mse for this minibatch
+        t_mse.append(current_se.mean())
+        t_losses.append(t_loss)
+    test_mse = np.array(t_mse).mean()
+    test_loss = np.array(t_losses).mean()
+    print "Test Loss: " + str(test_loss)
+    print "Test MSE: " + str(test_mse)
 
 
 if __name__ == '__main__':

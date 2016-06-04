@@ -2,18 +2,16 @@ import theano.tensor as T
 import numpy as np
 
 
-def berhu(predictions, targets,s=0.2,e=0.2):
+def berhu(predictions, targets,s=0.2,e=0.01):
     # Compute mask
     mask = T.gt(targets, e)
     # Compute n of valid pixels
     n_valid = T.sum(mask)
-    # Apply mask 
-    m_pred = predictions * mask
-    m_t = targets * mask
-    r = m_pred - m_t
+    # Redundant mult here 
+    r = (predictions - targets) * mask
     c = s * T.max(T.abs_(r))
     a_r = T.abs_(r)
-    b = T.switch(T.lt(a_r, c), a_r, (r**2 + c**2)/(2*c))
+    b = T.switch(T.lt(a_r, c), a_r, ((r**2) + (c**2))/(2*c))
     return T.sum(b)/n_valid
 
 def mse(predictions, targets):
