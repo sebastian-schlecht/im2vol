@@ -2,6 +2,17 @@ import theano.tensor as T
 import numpy as np
 
 
+
+def l2(predictions, targets):
+    # Compute mask
+    mask = T.gt(targets, 0.1)
+    # Compute n of valid pixels
+    n_valid = T.sum(mask)
+    # Apply mask 
+    d = (predictions - targets) * mask
+    return np.sqrt(T.sum((d)**2) / n_valid)
+
+
 def berhu(predictions, targets,s=0.2,e=0.01):
     # Compute mask
     mask = T.gt(targets, e)
@@ -16,13 +27,12 @@ def berhu(predictions, targets,s=0.2,e=0.01):
 
 def mse(predictions, targets):
     # Compute mask
-    mask = T.gt(targets, 0)
+    mask = T.gt(targets, 0.1)
     # Compute n of valid pixels
     n_valid = T.sum(mask)
     # Apply mask 
-    m_pred = predictions * mask
-    m_t = targets * mask
-    return T.sum((m_pred - m_t)**2) / n_valid
+    d = (predictions - targets) * mask
+    return T.sum((d)**2) / n_valid
 
 
 def tukey_biweight(predictions, targets, c=4.685, s=1.4826):
@@ -86,12 +96,12 @@ def spatial_gradient(prediction, target, l=0.5):
     pred_v = pred.flatten(2)
     target_v = target.flatten(2)
     # Compute mask
-    mask = T.gt(target_v,0)
+    mask = T.gt(target_v,0.)
     # Compute n of valid pixels
     n_valid = T.sum(mask, axis=1)
     # Apply mask and log transform
     m_pred = pred_v * mask
-    m_t = T.switch(mask, T.log(target_v),0)
+    m_t = T.switch(mask, T.log(target_v),0.)
     d = m_pred - m_t
 
     # Define scale invariant cost
@@ -105,9 +115,9 @@ def spatial_gradient(prediction, target, l=0.5):
     if target.ndim == 4:
         target = target[:,0,:,:]
     # Mask in tensor form
-    mask_tensor = T.gt(target,0)
+    mask_tensor = T.gt(target,0.)
     # Project into log space
-    target = T.switch(mask_tensor, T.log(target),0)
+    target = T.switch(mask_tensor, T.log(target),0.)
     # Stepsize
     h = 1
     # Compute spatial gradients symbolically
