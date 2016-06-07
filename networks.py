@@ -224,8 +224,8 @@ def residual_unet(input_var=None, n=3, un=1, connectivity=0):
 
 
 
-def residual_unet_old(input_var = None, n=3,nu=3):
-    # residual upsampling according to Iro
+def residual_unet_old(input_var = None, n=3,nu=1):
+
     def residual_block_up(l, decrease_dim=False, projection=True, pad=True):
         input_num_filters = l.output_shape[1]
         
@@ -240,13 +240,13 @@ def residual_unet_old(input_var = None, n=3,nu=3):
          # Our switch to "cheat" our inital dimensions back
         if pad:
             padding = "same"
-            proj_filter = (1,1)
-            conv_filter = (3,3)
+            proj_filter = (5,5)
+            conv_filter = (5,5)
         else:
-            padding = 0
+            padding = 1
             # Odd filters here but works to get the dimensions right
-            conv_filter = (3,1)
-            proj_filter = (3,1)
+            conv_filter = (5,3)
+            proj_filter = (5,3)
         
         
         # Now we can use a simple "normal" residual block
@@ -261,6 +261,7 @@ def residual_unet_old(input_var = None, n=3,nu=3):
                 block = NonlinearityLayer(ElemwiseSumLayer([stack_2, projection]),nonlinearity=rectify)
             ## NOT IMPLEMENTED
             else:
+                raise NotImplementedError()
                 # identity shortcut, as option A in paper
                 identity = ExpressionLayer(l, lambda X: X[:, :, ::2, ::2], lambda s: (s[0], s[1], s[2]//2, s[3]//2))
                 padding = PadLayer(identity, [out_num_filters//4,0,0], batch_ndim=1)
@@ -269,8 +270,9 @@ def residual_unet_old(input_var = None, n=3,nu=3):
             block = NonlinearityLayer(ElemwiseSumLayer([stack_2, l]),nonlinearity=rectify)
 
         return block
+    
     # create a residual learning building block with two stacked 3x3 convlayers as in paper
-    def residual_block(l, increase_dim=False, projection=False, pad=True):
+    def residual_block(l, increase_dim=False, projection=False, pad=True, force_output=None):
         input_num_filters = l.output_shape[1]
         if increase_dim:
             first_stride = (2,2)
@@ -279,7 +281,9 @@ def residual_unet_old(input_var = None, n=3,nu=3):
             first_stride = (1,1)
             out_num_filters = input_num_filters
             
-       
+        if force_output:
+            out_num_filters = force_output
+            
         bottleneck = out_num_filters // 4
         stack_1 = batch_norm(ConvLayer(l, num_filters=bottleneck, filter_size=(1,1), stride=first_stride, nonlinearity=rectify, pad='same', W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
         stack_2 = batch_norm(ConvLayer(stack_1, num_filters=bottleneck, filter_size=(3,3), stride=(1,1), nonlinearity=rectify, pad='same', W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
@@ -306,42 +310,45 @@ def residual_unet_old(input_var = None, n=3,nu=3):
     l_in = InputLayer(shape=(None, 3, 240, 320), input_var=input_var)
     
     # First batch normalized layer
-    l = batch_norm(ConvLayer(l_in, num_filters=256, filter_size=(5,5), stride=(2,2), nonlinearity=rectify, pad=2, W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
+    l = batch_norm(ConvLayer(l_in, num_filters=64, filter_size=(7,7), stride=(2,2), nonlinearity=rectify, pad=3, W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
     l = PoolLayer(l, pool_size=(2,2))
+    
+    # Output is 64x60x80 at this point
+    
     # Save reference before downsampling
     l_1 = l
     
-    # First residual block
-    for _ in range(1,n):
-        l = residual_block(l)    
+    l = residual_block(l, force_output=256)
+    l = residual_block(l)
     
-    # Save reference
-    l_2 = l
-    
-    # third stack of residual blocks, output is 512x30x40
+    # Output is 256x60x80 at this point
     l = residual_block(l, increase_dim=True)
-    for _ in range(1,n):
+    for _ in range(1,4)
         l = residual_block(l)
-    # Save reference
-    l_3 = l
-    
-    # forth stack of residual blocks, output is 1024x15x20
+        
+    # Output is 512x30x40 at this point
     l = residual_block(l, increase_dim=True)
-    for _ in range(1,n):
+    for _ in range(1,6)
         l = residual_block(l)
-    # Save reference
-    l_4 = l
-    # fifth stack of residual blocks, output is 2048x8x10
-    l = residual_block(l, increase_dim=True, projection=True)
-    for _ in range(1,n):
-        l = residual_block(l)
-    l_5 = l
     
+    # Output is 1024x16x20 at this point
+    l = residual_block(l, increase_dim=True)
+    for _ in range(1,3)
+        l = residual_block(l)
+    
+    # Output is 2048x8x10 at this point
+    
+    # Compress filters
+    l = batch_norm(ConvLayer(l, num_filters=1024, filter_size=(1,1), stride=(1,1), nonlinearity=rectify, pad="same", W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
+    
+    
+    ############################
     # Expansive path
+    ############################
     
-    # first expansive block. seventh stack of residuals, output is 256x16x20
+    # first expansive block. seventh stack of residuals, output is 512x16x20
     l = residual_block_up(l, decrease_dim=True)
-    for _ in range(1,n):
+    for _ in range(1,nu):
         l = residual_block(l)
     l_6 = l
     

@@ -197,10 +197,9 @@ def main(num_epochs=20, batch_size=16):
     learning_rate_schedule = {
     0: 0.0001, # low initial learning rate as described in paper
     1: 0.01, 
-    6: 0.005,
-    10: 0.002,
-    14: 0.0001,
-    18: 0.00005       
+    5: 0.001,
+    10: 0.0001,
+    15: 0.00001
     }
     
     for epoch in range(num_epochs):
