@@ -23,7 +23,7 @@ def debug_net(input_var=None, depth=3):
     :return: lasagne.layer
     """
     # Input
-    l_in = InputLayer(shape=(None, 3, 240, 320), input_var=input_var)
+    l_in = InputLayer(shape=(None, 3, 228, 304), input_var=input_var)
     l = l_in
     for _ in range(depth):
         l = batch_norm(ConvLayer(l, num_filters=64, filter_size=(3, 3), stride=(1, 1), nonlinearity=rectify, pad="same",
@@ -34,7 +34,7 @@ def debug_net(input_var=None, depth=3):
 
 def residual_unet(input_var = None, n=3,nu=1):
 
-    def residual_block_up(l, decrease_dim=False, projection=True, pad=True):
+    def residual_block_up(l, decrease_dim=False, projection=True, padding="same", conv_filter=(5,5), proj_filter=(5,5)):
         input_num_filters = l.output_shape[1]
         
         if decrease_dim:
@@ -43,20 +43,6 @@ def residual_unet(input_var = None, n=3,nu=1):
             l = Upscale2DLayer(l, 2)
         else:
             out_num_filters = input_num_filters
-        
-        
-         # Our switch to "cheat" our inital dimensions back
-        if pad:
-            padding = "same"
-            proj_filter = (5,5)
-            conv_filter = (5,5)
-        else:
-            padding = 1
-            # Odd filters here but works to get the dimensions right
-            conv_filter = (5,3)
-            proj_filter = (5,3)
-        
-        
         # Now we can use a simple "normal" residual block
         stack_1 = batch_norm(ConvLayer(l, num_filters=out_num_filters, filter_size=conv_filter, stride=(1,1), nonlinearity=rectify, pad=padding, W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
         stack_2 = batch_norm(ConvLayer(stack_1, num_filters=out_num_filters, filter_size=(3,3), stride=(1,1), nonlinearity=None, pad='same', W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
@@ -76,7 +62,7 @@ def residual_unet(input_var = None, n=3,nu=1):
                 block = NonlinearityLayer(ElemwiseSumLayer([stack_2, padding]),nonlinearity=rectify)
         else:
             block = NonlinearityLayer(ElemwiseSumLayer([stack_2, l]),nonlinearity=rectify)
-
+        print block.output_shape
         return block
     
     # create a residual learning building block with two stacked 3x3 convlayers as in paper
@@ -113,16 +99,18 @@ def residual_unet(input_var = None, n=3,nu=1):
             if projection:
                 l = batch_norm(ConvLayer(l, num_filters=out_num_filters, filter_size=(1,1), stride=(1,1), nonlinearity=None, pad='same', b=None, flip_filters=False))
             block = NonlinearityLayer(ElemwiseSumLayer([stack_3, l]),nonlinearity=rectify)
-
+          
+        print block.output_shape
         return block
     
      # Building the network
-    l_in = InputLayer(shape=(None, 3, 240, 320), input_var=input_var)
+    l_in = InputLayer(shape=(None, 3, 228, 304), input_var=input_var)
     
     # First batch normalized layer
     l = batch_norm(ConvLayer(l_in, num_filters=64, filter_size=(7,7), stride=(2,2), nonlinearity=rectify, pad=3, W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
+    print l.output_shape
     l = PoolLayer(l, pool_size=(2,2))
-    
+    print l.output_shape
     # Output is 64x60x80 at this point
     
     # Save reference before downsampling
@@ -157,7 +145,7 @@ def residual_unet(input_var = None, n=3,nu=1):
     ############################
     
     # first expansive block. seventh stack of residual,s output is 512x16x20
-    l = residual_block_up(l, decrease_dim=True)
+    l = residual_block_up(l, decrease_dim=True, padding=1, conv_filter=(4,4), proj_filter=(4,4))
     for _ in range(1,nu):
         l = residual_block(l)
     l_6 = l
@@ -166,13 +154,13 @@ def residual_unet(input_var = None, n=3,nu=1):
     # What we do is taking uneven filter dimensions to artificially generate the desired filter sizes
     # Question: Does this make sense or would cropping the first and last pixel row work better?!
     # first expansive block. seventh stack of residuals, output is 256x30x40
-    l = residual_block_up(l, decrease_dim=True, pad=False)
+    l = residual_block_up(l, decrease_dim=True, padding=1, conv_filter=(4,3), proj_filter=(4,3))
     for _ in range(1,nu):
         l = residual_block(l)
     l_7 = l
     
     # residual block #8, output is 128x60x80
-    l = residual_block_up(l, decrease_dim=True)
+    l = residual_block_up(l, decrease_dim=True,  padding=1, conv_filter=(4,3), proj_filter=(4,3))
     for _ in range(1,nu):
         l = residual_block(l)
     l_8 = l

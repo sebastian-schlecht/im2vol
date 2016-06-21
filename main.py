@@ -19,7 +19,7 @@ DATASET_TRAIN = "/home/sebastianschlecht/depth_data/nyu_v1_shuffled_cc"
 DATASET_VAL = "/home/sebastianschlecht/depth_data/nyu_depth_v2_resized"
 #DATASET_TRAIN=DATASET_VAL
 # Name used for saving losses and models
-name = "resunet_nol2"
+name = "resunet_final"
 # Init with model params
 model = None #'data/resunet_iro_epoch_25_0_01/resunet_iro_epoch_100.npz'
 # Synced mode for prefetching. Should stay True, otherwise this script will break
@@ -61,17 +61,17 @@ def prefetch_proc(bs, augment):
 
         ddc = dd[cy:cy+h, cx:cx+w]
         iic = ii[:,cy:cy+h,cx:cx+w]
-        dd_s = zoom(ddc,(s_fh, s_fw),order=1)
+        dd_s = zoom(ddc,(s_fh, s_fw),order=0, prefilter=False)
         dd_s /= s_f
-        ii_s = zoom(iic,(1,s_fh,s_fw),order=1)
-        return ii_s, dd_s
+        ii_s = zoom(iic,(1,s_fh,s_fw),order=0, prefilter=False)
+        return ii_s.astype(np.float32), dd_s.astype(np.float32)
         
         
     def zoom_rot(ii,dd):
         """ Rotate and zoom an image around a given angle"""
         a = np.random.randint(-5,5)
-        ddr = rotate(dd,a, order=1)
-        iir = rotate(ii.transpose((1,2,0)),a, order=1)
+        ddr = rotate(dd,a, order=0)
+        iir = rotate(ii.transpose((1,2,0)),a, order=0)
         
         f = np.random.randint(121,130) / 100.
         
@@ -91,13 +91,13 @@ def prefetch_proc(bs, augment):
         ddc = ddr[cy:cy+h, cx:cx+w]
         iic = iir[cy:cy+h,cx:cx+w,:]
 
-        dd_s = zoom(ddc,(s_fh, s_fw),order=0)
+        dd_s = zoom(ddc,(s_fh, s_fw),order=0, prefilter=False)
         dd_s /= s_f
         ii_s = iic.transpose((2,0,1))
         
-        ii_s = zoom(ii_s,(1,s_fh,s_fw),order=0)
+        ii_s = zoom(ii_s,(1,s_fh,s_fw),order=0, prefilter=False)
         
-        return ii_s, dd_s
+        return ii_s.astype(np.float32), dd_s.astype(np.float32)
     
     # Start func
     f = h5py.File(DATASET_TRAIN + ".hdf5")
@@ -113,15 +113,17 @@ def prefetch_proc(bs, augment):
         
         idx += bs
         for i in range(images.shape[0]):
-            images[i] = (images[i] - m) / 70.933385161726605
+            images[i] = (images[i] - m) / 71.571201304890508
             # Flip horizontally with probability 0.5
             if augment:
-                # Zoom/Rot
                 p = np.random.randint(3)
+                # 50% zoomrot
                 if p == 1:
                     images[i], labels[i] = zoom_rot(images[i], labels[i])
+                # 25% zoom only
                 elif p == 2:
                     images[i], labels[i] = zoom_(images[i], labels[i])
+                # 25% no augmentation
                 else:
                     pass
                 # Flips
@@ -162,8 +164,8 @@ def iterate_minibatches_synchronized(inputlen, batchsize, augment=False, downsam
     """
     for start_idx in range(0, inputlen - batchsize + 1, batchsize):
         # Random crops
-        h = 240
-        w = 320
+        h = 228
+        w = 304
 
         while True:
             try:
@@ -192,12 +194,12 @@ def load_val_data():
     # Subtract train mean already and normalize std
     m = np.load(DATASET_TRAIN + ".npy").astype(np.float32)
     for i in range(len(x_train)):
-        x_train[i] = (x_train[i] - m) / 70.933385161726605
+        x_train[i] = (x_train[i] - m) / 71.571201304890508
     f.close()
     return (x_train, y_train)
 
 
-def main(num_epochs=40, batch_size=16):
+def main(num_epochs=90, batch_size=16):
     loss_func = mse
     print "Building network"
     input_var = T.tensor4('inputs')
@@ -215,12 +217,12 @@ def main(num_epochs=40, batch_size=16):
     # Add some L2
     all_layers = lasagne.layers.get_all_layers(network)
     l2_penalty = lasagne.regularization.regularize_layer_params(all_layers, lasagne.regularization.l2) * 0.0001
-    cost = loss #+ l2_penalty
+    cost = loss + l2_penalty
 
 
     params = lasagne.layers.get_all_params(network, trainable=True)
     sh_lr = theano.shared(lasagne.utils.floatX(0.001))
-    updates = lasagne.updates.momentum(cost, params, learning_rate=sh_lr, momentum=0.9)
+    updates = lasagne.updates.nesterov_momentum(cost, params, learning_rate=sh_lr, momentum=0.9)
     # Load model weights
     if model is not None:
         print "Loading model weights %s" % model
@@ -242,7 +244,6 @@ def main(num_epochs=40, batch_size=16):
 
     length = f["images"].shape[0]
     f.close()
-    # TODO NO AUG
     start_prefetching_thread((batch_size, True))
     if validate:
         print "Loading validation data"
@@ -255,11 +256,10 @@ def main(num_epochs=40, batch_size=16):
     bidx = 0
     
     learning_rate_schedule = {
-     0:  0.0001, 
-     1:  0.01,
-     10: 0.001,
-     20: 0.0001,
-     30: 0.00001
+     0:  0.01, 
+     1:  0.1,
+     30: 0.01,
+     60: 0.001
     }
     for epoch in range(num_epochs):
         if epoch in learning_rate_schedule:
@@ -308,8 +308,8 @@ def main(num_epochs=40, batch_size=16):
             indices = np.arange(x_val.shape[0])
             for i in range(0,x_val.shape[0], batch_size):
                 excerpt = indices[i:i+batch_size]
-                x_in = x_val[excerpt,:,9:9+240, 12:12+320].copy()
-                y_in = y_val[excerpt,9:9+240, 12:12+320].copy()
+                x_in = x_val[excerpt,:,6:6+228, 8:8+304].copy()
+                y_in = y_val[excerpt,6:6+228, 8:8+304].copy()
                 y_in = y_in[:,::ds,::ds]
                 v_pred, v_loss = val_fn(x_in, y_in)
                 y_t = y_in[:,np.newaxis,:,:]
@@ -318,10 +318,6 @@ def main(num_epochs=40, batch_size=16):
                 
                 if loss_func == spatial_gradient:
                     v_pred = np.exp(v_pred)
-                
-                # Make a center crop to neglect missing areas at the border
-                y_t = y_t[:,:,15:-15,20:-20]
-                v_pred = v_pred[:,:,15:-15,20:-20]
                 current_se = (v_pred - y_t) ** 2
                 # calc current mse for this minibatch
                 v_mse.append(current_se.mean())
@@ -346,47 +342,6 @@ def main(num_epochs=40, batch_size=16):
     # Save
     np.savez('./data/' + name +'_epoch_%i.npz' % num_epochs, *lasagne.layers.get_all_param_values(network))
     np.save('./data/' + name + '_epoch_' + str(num_epochs) + '_loss_train.npy', np.array(train_losses))
-    
-    
-    # Test net with non-deterministic minibatch statistics
-    if validate:
-        print "Compiling test model"
-        test_prediction = lasagne.layers.get_output(network, deterministic=False)
-        test_loss = loss_func(test_prediction, target_reshaped)
-        test_fn = theano.function([input_var, target_var], [test_prediction, test_loss])
-        print "Testing"
-        t_losses = []
-        t_mse = []
-        indices = np.arange(x_val.shape[0])
-        # Warump running averages of batch norm units - we feed in the test-set once without updating weights. We only update
-        # the running averages which are computes as '[...].default_updates()' on the shared vars sitting 
-        # inside the batch_norm layers
-        for i in range(0,x_val.shape[0], batch_size):
-            excerpt = indices[i:i+batch_size]
-            x_in = x_val[excerpt,:,9:9+240, 12:12+320].copy()
-            y_in = y_val[excerpt,9:9+240:ds, 12:12+320:ds].copy()
-            t_pred, t_loss = test_fn(x_in, y_in)
-        for i in range(0,x_val.shape[0], batch_size):
-            excerpt = indices[i:i+batch_size]
-            x_in = x_val[excerpt,:,9:9+240, 12:12+320].copy()
-            y_in = y_val[excerpt,9:9+240, 12:12+320].copy()
-            y_in = y_in[:,::ds,::ds]
-            t_pred, t_loss = test_fn(x_in, y_in)
-            y_t = y_in[:,np.newaxis,:,:]
-
-            c_assert(y_t.shape == t_pred.shape)
-            if loss_func == spatial_gradient:
-                        t_pred = np.exp(t_pred)
-            y_t = y_t[:,:,15:-15,20:-20]
-            t_pred = t_pred[:,:,15:-15,20:-20]
-            current_se = (t_pred - y_t) ** 2
-            # calc current mse for this minibatch
-            t_mse.append(current_se.mean())
-            t_losses.append(t_loss)
-        test_mse = np.array(t_mse).mean()
-        test_loss = np.array(t_losses).mean()
-        print "Test Loss: " + str(test_loss)
-        print "Test MSE: " + str(test_mse)
 
 
 if __name__ == '__main__':
