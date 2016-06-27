@@ -1,4 +1,5 @@
 import numpy as np
+np.random.seed(42)
 import lasagne
 from threading import Thread
 import Queue
@@ -6,6 +7,7 @@ import theano
 import theano.tensor as T
 import h5py
 import time, math
+from PIL import Image
 from scipy.ndimage.interpolation import zoom,rotate
 
 
@@ -19,9 +21,9 @@ DATASET_TRAIN = "/home/sebastianschlecht/depth_data/nyu_v1_shuffled_cc"
 DATASET_VAL = "/home/sebastianschlecht/depth_data/nyu_depth_v2_resized"
 #DATASET_TRAIN=DATASET_VAL
 # Name used for saving losses and models
-name = "resunet_final"
+name = "resunet_mse"
 # Init with model params
-model = None #'data/resunet_iro_epoch_25_0_01/resunet_iro_epoch_100.npz'
+model = None#'data/resunet_final_spatial_grad_epoch_45.npz'
 # Synced mode for prefetching. Should stay True, otherwise this script will break
 synced_prefetching = True
 # Threadsafe queue for prefetching
@@ -47,7 +49,7 @@ def prefetch_proc(bs, augment):
     """
     
     def zoom_(ii,dd):
-        f = np.random.randint(1050,1300) / 1000.
+        f = np.random.randint(1050,1500) / 1000.
         h = int(dd.shape[0] / f)
         w = int(dd.shape[1] / f)
         
@@ -56,8 +58,8 @@ def prefetch_proc(bs, augment):
 
         s_f = (s_fh + s_fw) / 2.
         
-        cy = np.random.randint(dd.shape[0] - h )
-        cx = np.random.randint(dd.shape[1] - w )
+        cy = np.random.randint(dd.shape[0] - h+1 )
+        cx = np.random.randint(dd.shape[1] - w+1 )
 
         ddc = dd[cy:cy+h, cx:cx+w]
         iic = ii[:,cy:cy+h,cx:cx+w]
@@ -66,15 +68,28 @@ def prefetch_proc(bs, augment):
         ii_s = zoom(iic,(1,s_fh,s_fw),order=0, prefilter=False)
         return ii_s.astype(np.float32), dd_s.astype(np.float32)
         
+    def exposure_transformer(img, level):
+        """
+        Change the exposure in an RGB image
+        :param img: np.array
+        :param level: Number
+        :return: Image
         
+        """
+        def truncate(v):
+            return 0 if v < 0 else 255 if v > 255 else v
+        factor = (259. * (level+255.)) / (255. * (259.-level))
+        for x in np.nditer(img, op_flags=['readwrite']):
+            x[...] = truncate(factor * (x-128) + 128)
+        return img
+    
     def zoom_rot(ii,dd):
         """ Rotate and zoom an image around a given angle"""
-        a = np.random.randint(-5,5)
-        ddr = rotate(dd,a, order=0)
-        iir = rotate(ii.transpose((1,2,0)),a, order=0)
+        a = np.random.randint(-10,10)
+        ddr = rotate(dd,a, order=0, prefilter=False)
+        iir = rotate(ii.transpose((1,2,0)),a, order=0, prefilter=False)
         
-        f = np.random.randint(121,130) / 100.
-        
+        f = np.random.randint(10000,15100) / 10000.
         
         h = int(dd.shape[0] / f)
         w = int(dd.shape[1] / f)
@@ -84,9 +99,9 @@ def prefetch_proc(bs, augment):
 
         s_f = (s_fh + s_fw) / 2.
         
-
-        cy = np.random.randint(20,dd.shape[0] - h - 20)
-        cx = np.random.randint(20,dd.shape[1] - w - 20)
+        offset  = 0
+        cy = np.random.randint(offset,dd.shape[0] - h - offset + 1)
+        cx = np.random.randint(offset,dd.shape[1] - w - offset + 1)
 
         ddc = ddr[cy:cy+h, cx:cx+w]
         iic = iir[cy:cy+h,cx:cx+w,:]
@@ -110,22 +125,15 @@ def prefetch_proc(bs, augment):
             idx = 0
         images = np.array(f["images"][idx:idx+bs]).astype(np.float32).copy()
         labels = np.array(f["depths"][idx:idx+bs]).astype(np.float32).copy()
-        
         idx += bs
         for i in range(images.shape[0]):
-            images[i] = (images[i] - m) / 71.571201304890508
             # Flip horizontally with probability 0.5
             if augment:
-                p = np.random.randint(3)
-                # 50% zoomrot
-                if p == 1:
-                    images[i], labels[i] = zoom_rot(images[i], labels[i])
-                # 25% zoom only
-                elif p == 2:
-                    images[i], labels[i] = zoom_(images[i], labels[i])
-                # 25% no augmentation
-                else:
-                    pass
+                # Intensity
+                lvl = np.random.randint(100,128)
+                #images[i] = exposure_transformer(images[i], lvl)
+                # Zoomrot
+                images[i], labels[i] = zoom_rot(images[i], labels[i])
                 # Flips
                 p = np.random.randint(2)
                 if p > 0:
@@ -135,10 +143,16 @@ def prefetch_proc(bs, augment):
                 r = np.random.randint(90,111) / 100.
                 g = np.random.randint(90,111) / 100.
                 b = np.random.randint(90,111) / 100.
-                images[i, 0] = images[i, 0] * r
-                images[i, 1] = images[i, 1] * g
-                images[i, 2] = images[i, 2] * b
-                
+                images[i, 0] = (images[i, 0] * r).clip(0,255)
+                images[i, 1] = (images[i, 1] * g).clip(0,255)
+                images[i, 2] = (images[i, 2] * b).clip(0,255)
+        #images[images > 255] = 255
+            
+            
+        for i in range(images.shape[0]):
+            pass
+            # Subtract mean at the end and normalize variance
+            images[i] = (images[i] - m) / 71.571201304890508    
         assert images.shape[0] == bs
         assert labels.shape[0] == bs
         q.put((images, labels), block=True)
@@ -172,15 +186,24 @@ def iterate_minibatches_synchronized(inputlen, batchsize, augment=False, downsam
                 inputs, targets = q.get(block=True,timeout=0.05)
                 break
             except Queue.Empty:
-                print "Prefetch Queue Empty"
-        if augment:
-            cy = np.random.randint(inputs.shape[2] - h)
-            cx = np.random.randint(inputs.shape[3] - w)
-        else:
-            cy = (inputs.shape[2] - h) // 2
-            cx = (inputs.shape[3] - w) // 2
-        input_cropped = inputs[:, :, cy:cy+h, cx:cx+w]
-        target_cropped = targets[:, cy:cy+h:downsample, cx:cx+w:downsample]
+                pass
+                #print "Prefetch Queue Empty"
+        
+        # Random crop
+        input_cropped = np.zeros((inputs.shape[0], inputs.shape[1],h,w), dtype=np.float32)
+        target_cropped = np.zeros((targets.shape[0],h,w), dtype=np.float32)
+        c_assert(inputs.shape[0] == targets.shape[0])
+        for idx in range(inputs.shape[0]):
+            if augment:
+                cy = np.random.randint(inputs.shape[2] - h)
+                cx = np.random.randint(inputs.shape[3] - w)
+            else:
+                cy = (inputs.shape[2] - h) // 2
+                cx = (inputs.shape[3] - w) // 2
+            input_cropped[idx] = inputs[idx, :, cy:cy+h, cx:cx+w]
+            target_cropped[idx] = targets[idx, cy:cy+h, cx:cx+w]
+        
+        target_cropped = target_cropped[:,::downsample,::downsample]
         yield input_cropped, target_cropped
 
 
@@ -199,7 +222,7 @@ def load_val_data():
     return (x_train, y_train)
 
 
-def main(num_epochs=90, batch_size=16):
+def main(num_epochs=42, batch_size=16):
     loss_func = mse
     print "Building network"
     input_var = T.tensor4('inputs')
@@ -222,7 +245,7 @@ def main(num_epochs=90, batch_size=16):
 
     params = lasagne.layers.get_all_params(network, trainable=True)
     sh_lr = theano.shared(lasagne.utils.floatX(0.001))
-    updates = lasagne.updates.nesterov_momentum(cost, params, learning_rate=sh_lr, momentum=0.9)
+    updates = lasagne.updates.nesterov_momentum(cost, params, learning_rate=sh_lr, momentum=0.95)
     # Load model weights
     if model is not None:
         print "Loading model weights %s" % model
@@ -257,9 +280,10 @@ def main(num_epochs=90, batch_size=16):
     
     learning_rate_schedule = {
      0:  0.01, 
-     1:  0.1,
-     30: 0.01,
-     60: 0.001
+     1:  0.1,   
+     6:  0.01,
+     18: 0.001,
+     30: 0.0001   
     }
     for epoch in range(num_epochs):
         if epoch in learning_rate_schedule:
@@ -275,7 +299,7 @@ def main(num_epochs=90, batch_size=16):
         print "Training Epoch %i" % (epoch + 1)
 
         # Train for one epoch
-        for batch in iterate_minibatches_synchronized(length, batch_size, augment=False, downsample=ds):
+        for batch in iterate_minibatches_synchronized(length, batch_size, augment=True, downsample=ds):
             inputs, targets = batch
             bts = time.time()
             

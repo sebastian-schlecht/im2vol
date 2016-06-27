@@ -62,7 +62,6 @@ def residual_unet(input_var = None, n=3,nu=1):
                 block = NonlinearityLayer(ElemwiseSumLayer([stack_2, padding]),nonlinearity=rectify)
         else:
             block = NonlinearityLayer(ElemwiseSumLayer([stack_2, l]),nonlinearity=rectify)
-        print block.output_shape
         return block
     
     # create a residual learning building block with two stacked 3x3 convlayers as in paper
@@ -100,7 +99,6 @@ def residual_unet(input_var = None, n=3,nu=1):
                 l = batch_norm(ConvLayer(l, num_filters=out_num_filters, filter_size=(1,1), stride=(1,1), nonlinearity=None, pad='same', b=None, flip_filters=False))
             block = NonlinearityLayer(ElemwiseSumLayer([stack_3, l]),nonlinearity=rectify)
           
-        print block.output_shape
         return block
     
      # Building the network
@@ -108,9 +106,7 @@ def residual_unet(input_var = None, n=3,nu=1):
     
     # First batch normalized layer
     l = batch_norm(ConvLayer(l_in, num_filters=64, filter_size=(7,7), stride=(2,2), nonlinearity=rectify, pad=3, W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
-    print l.output_shape
     l = PoolLayer(l, pool_size=(2,2))
-    print l.output_shape
     # Output is 64x60x80 at this point
     
     # Save reference before downsampling

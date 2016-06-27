@@ -17,10 +17,8 @@ def berhu(predictions, targets,s=0.2,e=0.01):
     return T.sum(b)/n_valid
 
 def mse(predictions, targets):
-    # Compute mask, cap at 0.5m and 10m
-    lmask = T.gt(targets, 0.5)
-    umask = T.lt(targets, 10.)
-    mask = lmask * umask
+  
+    mask = T.gt(targets, 0.)
     
     
     mp = mask * predictions
