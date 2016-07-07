@@ -3,9 +3,9 @@ import numpy as np
 
 
 
-def berhu(predictions, targets,s=0.2,e=0.01):
+def berhu(predictions, targets,s=0.2,l=0.5,m=1.2):
     # Compute mask
-    mask = T.gt(targets, e)
+    mask = T.gt(targets, l) * T.lt(targets,m)
 
     # Compute n of valid pixels
     n_valid = T.sum(mask)
@@ -15,6 +15,47 @@ def berhu(predictions, targets,s=0.2,e=0.01):
     a_r = T.abs_(r)
     b = T.switch(T.lt(a_r, c), a_r, ((r**2) + (c**2))/(2*c))
     return T.sum(b)/n_valid
+
+
+def berhu_spatial(predictions, targets,s=0.2,l=0.5,m=1.2):
+    # Compute mask
+    mask = T.gt(targets, l) * T.lt(targets,m)
+
+    # Compute n of valid pixels
+    n_valid = T.sum(mask)
+    r = (predictions - targets) * mask
+    c = s * T.max(T.abs_(r))
+    a_r = T.abs_(r)
+    b = T.switch(T.lt(a_r, c), a_r, ((r**2) + (c**2))/(2*c))
+    
+    pixel_cost = T.sum(b)/n_valid
+    
+    # Gradient cost
+    h = 1
+    pred = predictions
+    target = targets
+    
+    if pred.ndim == 4:
+        pred = pred[:,0,:,:]
+    if target.ndim == 4:
+        target = target[:,0,:,:]
+    
+    # Recompute mask
+    mask = T.gt(target, l) * T.lt(target,m)
+        
+    p_di = (pred[:,h:,:] - pred[:,:-h,:]) * (1 / np.float32(h))
+    p_dj = (pred[:,:,h:] - pred[:,:,:-h]) * (1 / np.float32(h))
+    t_di = (target[:,h:,:] - target[:,:-h,:]) * (1 / np.float32(h))
+    t_dj = (target[:,:,h:] - target[:,:,:-h]) * (1 / np.float32(h))
+    m_di = T.and_(mask[:,h:,:], mask[:,:-h,:])
+    m_dj = T.and_(mask[:,:,h:], mask[:,:,:-h])
+    # Define spatial grad cost
+    grad_cost = T.sum(m_di * (p_di - t_di)**2) / T.sum(m_di) + T.sum(m_dj * (p_dj - t_dj)**2) / T.sum(m_dj)
+    
+    return grad_cost + pixel_cost
+    
+
+
 
 def mse(predictions, targets):
   
@@ -85,7 +126,7 @@ def tukey_biweight(predictions, targets, c=4.685, s=1.4826):
     return T.sum(T.sum(T.switch(tukey_mask, (c ** 2) / 6., cost), axis=1)) / T.maximum((T.sum(n_valid)), 1)
 
 
-def spatial_gradient(prediction, target, l=0.5):
+def spatial_gradient(prediction, target, l=0.1,m=2.):
     # Flatten input to make calc easier
     pred = prediction
     pred_v = pred.flatten(2)

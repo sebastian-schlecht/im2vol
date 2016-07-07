@@ -11,6 +11,7 @@ from lasagne.layers import ElemwiseSumLayer
 from lasagne.layers import PadLayer
 from lasagne.layers import ExpressionLayer, GlobalPoolLayer
 from lasagne.layers import FlattenLayer, ReshapeLayer
+from lasagne.layers import ConcatLayer
 from lasagne.nonlinearities import rectify
 from lasagne.layers import TransposedConv2DLayer as DeconvLayer, ConcatLayer
 
@@ -32,7 +33,7 @@ def debug_net(input_var=None, depth=3):
                       W=lasagne.init.HeNormal(gain='relu'), flip_filters=False)
     return PoolLayer(l,pool_size=(2,2))
 
-def residual_unet(input_var = None, n=3,nu=1):
+def residual_unet(input_var = None, n=3,nu=1, connectivity=0,rectify_last=True):
 
     def residual_block_up(l, decrease_dim=False, projection=True, padding="same", conv_filter=(5,5), proj_filter=(5,5)):
         input_num_filters = l.output_shape[1]
@@ -111,31 +112,37 @@ def residual_unet(input_var = None, n=3,nu=1):
     
     # Save reference before downsampling
     l_1 = l
-    
+
     l = residual_block(l, projection=True, force_output=256)
     l = residual_block(l)
     
+    l_2 = l
+
     # Output is 256x60x80 at this point
     l = residual_block(l, projection=True, increase_dim=True)
     for _ in range(1,4):
         l = residual_block(l)
-        
+    l_3 = l
+
     # Output is 512x30x40 at this point
     l = residual_block(l, projection=True,increase_dim=True)
     for _ in range(1,6):
         l = residual_block(l)
-    
+    l_4 = l
+
     # Output is 1024x16x20 at this point
     l = residual_block(l, projection=True,increase_dim=True)
     for _ in range(1,3):
         l = residual_block(l)
     
     # Output is 2048x8x10 at this point
-    
+    l_5 = l
+
     # Compress filters
     l = batch_norm(ConvLayer(l, num_filters=1024, filter_size=(1,1), stride=(1,1), nonlinearity=None, pad="same", W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
     
-    
+    l_6 = l
+
     ############################
     # Expansive path
     ############################
@@ -144,7 +151,10 @@ def residual_unet(input_var = None, n=3,nu=1):
     l = residual_block_up(l, decrease_dim=True, padding=1, conv_filter=(4,4), proj_filter=(4,4))
     for _ in range(1,nu):
         l = residual_block(l)
-    l_6 = l
+    l_7 = l
+    if connectivity > 0:
+        l = ConcatLayer([l_4,l_7])
+
     
     # We have to cheat here in order to get our initial feature map dimensions back
     # What we do is taking uneven filter dimensions to artificially generate the desired filter sizes
@@ -153,21 +163,25 @@ def residual_unet(input_var = None, n=3,nu=1):
     l = residual_block_up(l, decrease_dim=True, padding=1, conv_filter=(4,3), proj_filter=(4,3))
     for _ in range(1,nu):
         l = residual_block(l)
-    l_7 = l
-    
+    l_8 = l
+    if connectivity > 1:
+        l = ConcatLayer([l_3,l_8])
     # residual block #8, output is 128x60x80
     l = residual_block_up(l, decrease_dim=True,  padding=1, conv_filter=(4,3), proj_filter=(4,3))
     for _ in range(1,nu):
         l = residual_block(l)
-    l_8 = l
-    
+    l_9 = l
+    if connectivity > 2:
+        l = ConcatLayer([l_2,l_9])
     # residual block #9, output is 64x120x160
     l = residual_block_up(l, decrease_dim=True)
     for _ in range(1,nu):
         l = residual_block(l)
-    l_9 = l
-    
-    
+    l_10 = l
+
+    nl = rectify
+    if not rectify_last:
+        nl = None
     # final convolution
-    l = batch_norm(ConvLayer(l, num_filters=1, filter_size=(3,3), stride=(1,1), nonlinearity=rectify, pad="same", W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
+    l = batch_norm(ConvLayer(l, num_filters=1, filter_size=(3,3), stride=(1,1), nonlinearity=nl, pad="same", W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
     return l

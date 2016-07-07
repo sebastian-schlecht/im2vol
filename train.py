@@ -12,18 +12,18 @@ from scipy.ndimage.interpolation import zoom,rotate
 
 
 from networks import  residual_unet, debug_net
-from losses import spatial_gradient, berhu, mse
+from losses import spatial_gradient, berhu, mse, berhu_spatial
 
 # Our shuffled dataset. Important that we store it in contigous blocks, and not chunks to have const. speed on variable batchsizes
-DATASET_TRAIN = "/home/sebastianschlecht/depth_data/nyu_v1_shuffled_cc"
+DATASET_TRAIN = "/home/sebastianschlecht/depth_data/f3d_train"
 
 # Validation dataset that we keep in memory
-DATASET_VAL = "/home/sebastianschlecht/depth_data/nyu_depth_v2_resized"
+DATASET_VAL = "/home/sebastianschlecht/depth_data/f3d_test"
 #DATASET_TRAIN=DATASET_VAL
 # Name used for saving losses and models
-name = "resunet_mse"
+name = "resunet_food_spatial_mse_low_lr"
 # Init with model params
-model = None#'data/resunet_final_spatial_grad_epoch_45.npz'
+model = 'data/resunet_mse_epoch_25.npz'
 # Synced mode for prefetching. Should stay True, otherwise this script will break
 synced_prefetching = True
 # Threadsafe queue for prefetching
@@ -83,9 +83,9 @@ def prefetch_proc(bs, augment):
             x[...] = truncate(factor * (x-128) + 128)
         return img
     
-    def zoom_rot(ii,dd):
+    def zoom_rot(ii,dd, a=10):
         """ Rotate and zoom an image around a given angle"""
-        a = np.random.randint(-10,10)
+        a = np.random.randint(-a,a)
         ddr = rotate(dd,a, order=0, prefilter=False)
         iir = rotate(ii.transpose((1,2,0)),a, order=0, prefilter=False)
         
@@ -125,6 +125,9 @@ def prefetch_proc(bs, augment):
             idx = 0
         images = np.array(f["images"][idx:idx+bs]).astype(np.float32).copy()
         labels = np.array(f["depths"][idx:idx+bs]).astype(np.float32).copy()
+        labels[labels == np.inf] = 0
+        labels[labels == np.nan] = 0
+        
         idx += bs
         for i in range(images.shape[0]):
             # Flip horizontally with probability 0.5
@@ -222,15 +225,15 @@ def load_val_data():
     return (x_train, y_train)
 
 
-def main(num_epochs=42, batch_size=16):
-    loss_func = mse
+def main(num_epochs=30, batch_size=16):
+    loss_func = berhu_spatial
     print "Building network"
     input_var = T.tensor4('inputs')
     target_var = T.tensor3('targets')
     # Reshape to enable usage in loss function
     target_reshaped = target_var.dimshuffle((0, "x", 1, 2))
     
-    network = residual_unet(input_var=input_var)
+    network = residual_unet(input_var=input_var,rectify_last=False)
     # Downsample factor
     ds = 2
     
@@ -278,12 +281,10 @@ def main(num_epochs=42, batch_size=16):
     bt = 0
     bidx = 0
     
-    learning_rate_schedule = {
-     0:  0.01, 
-     1:  0.1,   
-     6:  0.01,
-     18: 0.001,
-     30: 0.0001   
+    learning_rate_schedule = { 
+     0:  0.001,   
+     10: 0.0001,
+     20: 0.00001,   
     }
     for epoch in range(num_epochs):
         if epoch in learning_rate_schedule:
@@ -321,7 +322,7 @@ def main(num_epochs=42, batch_size=16):
             train_err += err
             train_batches += 1
             # Save intermedia train loss
-            if bidx % 100 == 0:
+            if bidx % 10 == 0:
                 np.save('./data/' + name + '_epoch_' + str(num_epochs) + '_loss_train.npy', np.array(train_losses))
 
 
@@ -342,6 +343,7 @@ def main(num_epochs=42, batch_size=16):
                 
                 if loss_func == spatial_gradient:
                     v_pred = np.exp(v_pred)
+                
                 current_se = (v_pred - y_t) ** 2
                 # calc current mse for this minibatch
                 v_mse.append(current_se.mean())
