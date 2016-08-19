@@ -1,4 +1,5 @@
-data/
+*.npy
+*.npz
 venv
 *.pyc
 .idea

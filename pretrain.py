@@ -1,8 +1,7 @@
 import numpy as np
 np.random.seed(42)
 import lasagne
-from threading import Thread
-import Queue
+from multiprocessing import Process, Queue
 import theano
 import theano.tensor as T
 import h5py
@@ -15,11 +14,12 @@ from networks import  residual_unet, debug_net
 from losses import spatial_gradient, berhu, mse
 
 # Our shuffled dataset. Important that we store it in contigous blocks, and not chunks to have const. speed on variable batchsizes
-DATASET_TRAIN = "/home/sebastianschlecht/depth_data/nyu_v1_shuffled_cc"
+DATASET_TRAIN = "/data/data/nyu_v2"
 
 # Validation dataset that we keep in memory
 DATASET_VAL = "/home/sebastianschlecht/depth_data/nyu_depth_v2_resized"
-#DATASET_TRAIN=DATASET_VAL
+DATASET_VAL = DATASET_TRAIN
+
 # Name used for saving losses and models
 name = "resunet_mse"
 # Init with model params
@@ -27,7 +27,7 @@ model = None#'data/resunet_final_spatial_grad_epoch_45.npz'
 # Synced mode for prefetching. Should stay True, otherwise this script will break
 synced_prefetching = True
 # Threadsafe queue for prefetching
-q = Queue.Queue(maxsize=20)
+q = Queue(maxsize=20)
 # Validate during training
 validate = True
 # Use local assertions
@@ -42,7 +42,7 @@ def c_assert(condition):
 
 
 
-def prefetch_proc(bs, augment):
+def prefetch_proc(bs, augment, q):
     """
     Open handle to DB and prefetch data. Also do random online augmention
     :return: None - Loops infinitely
@@ -118,7 +118,6 @@ def prefetch_proc(bs, augment):
     f = h5py.File(DATASET_TRAIN + ".hdf5")
     length = f["images"].shape[0]
     idx = 0
-    # Subtract mean already and normalize std
     m = np.load(DATASET_TRAIN + ".npy").astype(np.float32)
     while True:
         if idx + bs > length:
@@ -146,9 +145,7 @@ def prefetch_proc(bs, augment):
                 images[i, 0] = (images[i, 0] * r).clip(0,255)
                 images[i, 1] = (images[i, 1] * g).clip(0,255)
                 images[i, 2] = (images[i, 2] * b).clip(0,255)
-        #images[images > 255] = 255
-            
-            
+                        
         for i in range(images.shape[0]):
             pass
             # Subtract mean at the end and normalize variance
@@ -160,7 +157,7 @@ def prefetch_proc(bs, augment):
 
 
 def start_prefetching_thread(args):
-    thread = Thread(target=prefetch_proc, args=args)
+    thread = Process(target=prefetch_proc, args=args)
     thread.daemon = True
     thread.start()
     return thread
@@ -222,7 +219,7 @@ def load_val_data():
     return (x_train, y_train)
 
 
-def main(num_epochs=42, batch_size=16):
+def main(num_epochs=42, batch_size=8):
     loss_func = mse
     print "Building network"
     input_var = T.tensor4('inputs')
@@ -230,7 +227,7 @@ def main(num_epochs=42, batch_size=16):
     # Reshape to enable usage in loss function
     target_reshaped = target_var.dimshuffle((0, "x", 1, 2))
     
-    network = residual_unet(input_var=input_var)
+    network = residual_unet(input_var=input_var, connectivity=4)
     # Downsample factor
     ds = 2
     
@@ -267,7 +264,7 @@ def main(num_epochs=42, batch_size=16):
 
     length = f["images"].shape[0]
     f.close()
-    start_prefetching_thread((batch_size, True))
+    start_prefetching_thread((batch_size, True, q))
     if validate:
         print "Loading validation data"
         x_val, y_val = load_val_data()
