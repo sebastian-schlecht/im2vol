@@ -17,13 +17,12 @@ from losses import spatial_gradient, berhu, mse
 DATASET_TRAIN = "/data/data/nyu_v2"
 
 # Validation dataset that we keep in memory
-DATASET_VAL = "/home/sebastianschlecht/depth_data/nyu_depth_v2_resized"
-DATASET_VAL = DATASET_TRAIN
+DATASET_VAL = "/data/data/test_v2"
 
 # Name used for saving losses and models
-name = "resunet_mse"
+name = "resunet_connected_mse"
 # Init with model params
-model = None#'data/resunet_final_spatial_grad_epoch_45.npz'
+model = None
 # Synced mode for prefetching. Should stay True, otherwise this script will break
 synced_prefetching = True
 # Threadsafe queue for prefetching
@@ -276,12 +275,15 @@ def main(num_epochs=42, batch_size=8):
     bidx = 0
     
     learning_rate_schedule = {
-     0:  0.01, 
-     1:  0.1,   
-     6:  0.01,
-     18: 0.001,
-     30: 0.0001   
+     0:   0.0001,
+     1:   0.001,
+     12:  0.0001,
+     24:  0.00001,
+     36:  0.000001   
     }
+    
+    assert 0 in learning_rate_schedule
+    
     for epoch in range(num_epochs):
         if epoch in learning_rate_schedule:
             val = learning_rate_schedule[epoch]
@@ -294,7 +296,7 @@ def main(num_epochs=42, batch_size=8):
         train_batches = 0
         start_time = time.time()
         print "Training Epoch %i" % (epoch + 1)
-
+        
         # Train for one epoch
         for batch in iterate_minibatches_synchronized(length, batch_size, augment=True, downsample=ds):
             inputs, targets = batch
@@ -307,7 +309,7 @@ def main(num_epochs=42, batch_size=8):
             bte = time.time()
             bt += (bte - bts)
             bidx += 1
-            if bidx == 60 and epoch == 0:
+            if bidx == 20 and epoch == 0:
                 tpb = bt / bidx
                 print "Average time per forward/backward pass: " + str(tpb)
                 eta = time.time() + num_epochs * (tpb * (length/batch_size))
@@ -317,8 +319,9 @@ def main(num_epochs=42, batch_size=8):
             train_losses.append(err)
             train_err += err
             train_batches += 1
+
             # Save intermedia train loss
-            if bidx % 100 == 0:
+            if bidx % 20 == 0:
                 np.save('./data/' + name + '_epoch_' + str(num_epochs) + '_loss_train.npy', np.array(train_losses))
 
 
@@ -354,6 +357,7 @@ def main(num_epochs=42, batch_size=8):
         if validate:
             print("  val loss:\t\t{:.6f}".format(val_loss))
             print("  val mse:\t\t{:.6f}".format(val_mse))
+        
         # Store intermediate val loss
         np.save('./data/' + name + '_epoch_' + str(num_epochs) + '_loss_val.npy', np.array(val_losses))
         np.save('./data/' + name + '_epoch_' + str(num_epochs) + '_errors_val.npy', np.array(val_errors))

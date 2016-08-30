@@ -158,21 +158,27 @@ def residual_unet(input_var = None, n=3,nu=1, connectivity=0,rectify_last=True):
     
     # We have to cheat here in order to get our initial feature map dimensions back
     # What we do is taking uneven filter dimensions to artificially generate the desired filter sizes
+    
     # Question: Does this make sense or would cropping the first and last pixel row work better?!
+    
     # first expansive block. seventh stack of residuals, output is 256x30x40
     l = residual_block_up(l, decrease_dim=True, padding=1, conv_filter=(4,3), proj_filter=(4,3))
     for _ in range(1,nu):
         l = residual_block(l)
     l_8 = l
+    
     if connectivity > 1:
         l = ConcatLayer([l_3,l_8])
+    
     # residual block #8, output is 128x60x80
     l = residual_block_up(l, decrease_dim=True,  padding=1, conv_filter=(4,3), proj_filter=(4,3))
     for _ in range(1,nu):
         l = residual_block(l)
     l_9 = l
+    
     if connectivity > 2:
         l = ConcatLayer([l_2,l_9])
+    
     # residual block #9, output is 64x120x160
     l = residual_block_up(l, decrease_dim=True)
     for _ in range(1,nu):
@@ -182,6 +188,7 @@ def residual_unet(input_var = None, n=3,nu=1, connectivity=0,rectify_last=True):
     nl = rectify
     if not rectify_last:
         nl = None
-    # final convolution
-    l = batch_norm(ConvLayer(l, num_filters=1, filter_size=(3,3), stride=(1,1), nonlinearity=nl, pad="same", W=lasagne.init.HeNormal(gain='relu'), flip_filters=False))
+    
+    # Final convolution
+    l = ConvLayer(l, num_filters=1, filter_size=(3,3), stride=(1,1), nonlinearity=nl, pad="same", W=lasagne.init.HeNormal(gain='relu'), flip_filters=False)
     return l
