@@ -11,7 +11,7 @@ from scipy.ndimage.interpolation import zoom,rotate
 
 
 from networks import  residual_unet, debug_net
-from losses import spatial_gradient, berhu, mse
+from losses import spatial_gradient, berhu, mse, berhu_spatial
 
 # Our shuffled dataset. Important that we store it in contigous blocks, and not chunks to have const. speed on variable batchsizes
 DATASET_TRAIN = "/data/data/nyu_v2"
@@ -218,7 +218,7 @@ def load_val_data():
     return (x_train, y_train)
 
 
-def main(num_epochs=42, batch_size=8):
+def main(num_epochs=60, batch_size=16):
     loss_func = mse
     print "Building network"
     input_var = T.tensor4('inputs')
@@ -275,11 +275,10 @@ def main(num_epochs=42, batch_size=8):
     bidx = 0
     
     learning_rate_schedule = {
-     0:   0.0001,
-     1:   0.001,
-     12:  0.0001,
-     24:  0.00001,
-     36:  0.000001   
+     0:   0.001,
+     1:   0.01,
+     30:  0.001,
+     50:  0.0001, 
     }
     
     assert 0 in learning_rate_schedule

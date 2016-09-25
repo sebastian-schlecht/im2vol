@@ -1,8 +1,7 @@
 import numpy as np
 np.random.seed(42)
 import lasagne
-from threading import Thread
-import Queue
+from multiprocessing import Process, Queue
 import theano
 import theano.tensor as T
 import h5py
@@ -12,22 +11,22 @@ from scipy.ndimage.interpolation import zoom,rotate
 
 
 from networks import  residual_unet, debug_net
-from losses import spatial_gradient, berhu, mse, berhu_spatial
+from losses import spatial_gradient, berhu, mse, berhu_spatial, berhu_spatial_low_thresh
 
 # Our shuffled dataset. Important that we store it in contigous blocks, and not chunks to have const. speed on variable batchsizes
-DATASET_TRAIN = "/home/sebastianschlecht/depth_data/f3d_train"
+DATASET_TRAIN = "/data/data/f3d-train"
 
 # Validation dataset that we keep in memory
-DATASET_VAL = "/home/sebastianschlecht/depth_data/f3d_test"
-#DATASET_TRAIN=DATASET_VAL
+DATASET_VAL = "/data/data/f3d-val"
+
 # Name used for saving losses and models
-name = "resunet_food_spatial_mse_low_lr"
-# Init with model params
-model = 'data/resunet_mse_epoch_25.npz'
+name = "resunet_f3d_finetune"
+# Init with model params from pre-training
+model = "/data/im2vol/data/resunet_connected_berhu_epoch_120.npz"
 # Synced mode for prefetching. Should stay True, otherwise this script will break
 synced_prefetching = True
 # Threadsafe queue for prefetching
-q = Queue.Queue(maxsize=20)
+q = Queue(maxsize=20)
 # Validate during training
 validate = True
 # Use local assertions
@@ -42,7 +41,7 @@ def c_assert(condition):
 
 
 
-def prefetch_proc(bs, augment):
+def prefetch_proc(bs, augment, q):
     """
     Open handle to DB and prefetch data. Also do random online augmention
     :return: None - Loops infinitely
@@ -83,9 +82,9 @@ def prefetch_proc(bs, augment):
             x[...] = truncate(factor * (x-128) + 128)
         return img
     
-    def zoom_rot(ii,dd, a=10):
+    def zoom_rot(ii,dd):
         """ Rotate and zoom an image around a given angle"""
-        a = np.random.randint(-a,a)
+        a = np.random.randint(-10,10)
         ddr = rotate(dd,a, order=0, prefilter=False)
         iir = rotate(ii.transpose((1,2,0)),a, order=0, prefilter=False)
         
@@ -118,16 +117,12 @@ def prefetch_proc(bs, augment):
     f = h5py.File(DATASET_TRAIN + ".hdf5")
     length = f["images"].shape[0]
     idx = 0
-    # Subtract mean already and normalize std
     m = np.load(DATASET_TRAIN + ".npy").astype(np.float32)
     while True:
         if idx + bs > length:
             idx = 0
         images = np.array(f["images"][idx:idx+bs]).astype(np.float32).copy()
         labels = np.array(f["depths"][idx:idx+bs]).astype(np.float32).copy()
-        labels[labels == np.inf] = 0
-        labels[labels == np.nan] = 0
-        
         idx += bs
         for i in range(images.shape[0]):
             # Flip horizontally with probability 0.5
@@ -149,9 +144,7 @@ def prefetch_proc(bs, augment):
                 images[i, 0] = (images[i, 0] * r).clip(0,255)
                 images[i, 1] = (images[i, 1] * g).clip(0,255)
                 images[i, 2] = (images[i, 2] * b).clip(0,255)
-        #images[images > 255] = 255
-            
-            
+                        
         for i in range(images.shape[0]):
             pass
             # Subtract mean at the end and normalize variance
@@ -163,7 +156,7 @@ def prefetch_proc(bs, augment):
 
 
 def start_prefetching_thread(args):
-    thread = Thread(target=prefetch_proc, args=args)
+    thread = Process(target=prefetch_proc, args=args)
     thread.daemon = True
     thread.start()
     return thread
@@ -226,14 +219,14 @@ def load_val_data():
 
 
 def main(num_epochs=30, batch_size=16):
-    loss_func = berhu_spatial
+    loss_func = berhu_spatial_low_thresh
     print "Building network"
     input_var = T.tensor4('inputs')
     target_var = T.tensor3('targets')
     # Reshape to enable usage in loss function
     target_reshaped = target_var.dimshuffle((0, "x", 1, 2))
     
-    network = residual_unet(input_var=input_var,rectify_last=False)
+    network = residual_unet(input_var=input_var, connectivity=4)
     # Downsample factor
     ds = 2
     
@@ -248,7 +241,20 @@ def main(num_epochs=30, batch_size=16):
 
     params = lasagne.layers.get_all_params(network, trainable=True)
     sh_lr = theano.shared(lasagne.utils.floatX(0.001))
-    updates = lasagne.updates.nesterov_momentum(cost, params, learning_rate=sh_lr, momentum=0.95)
+    
+    # Scale learning rate towards the end (the higher the layer in the net, the higher the lr
+    # Ranging from 0 to 10
+    from collections import OrderedDict
+    layers = lasagne.layers.get_all_layers(network)
+    n_layers = len(layers)
+    stepsize = 10. / n_layers
+    updates = OrderedDict()
+    idx = 0
+    for layer in layers:
+        params = layer.get_params(trainable=True)
+        updates.update(lasagne.updates.nesterov_momentum(cost, params, learning_rate=sh_lr * idx * stepsize, momentum=0.90))
+        idx += stepsize
+        
     # Load model weights
     if model is not None:
         print "Loading model weights %s" % model
@@ -270,7 +276,7 @@ def main(num_epochs=30, batch_size=16):
 
     length = f["images"].shape[0]
     f.close()
-    start_prefetching_thread((batch_size, True))
+    start_prefetching_thread((batch_size, True, q))
     if validate:
         print "Loading validation data"
         x_val, y_val = load_val_data()
@@ -281,11 +287,15 @@ def main(num_epochs=30, batch_size=16):
     bt = 0
     bidx = 0
     
-    learning_rate_schedule = { 
-     0:  0.001,   
-     10: 0.0001,
-     20: 0.00001,   
+    learning_rate_schedule = {
+     0:   0.0001,
+     1:   0.001,
+     15:  0.0001,
+     25:  0.00001, 
     }
+    
+    assert 0 in learning_rate_schedule
+    
     for epoch in range(num_epochs):
         if epoch in learning_rate_schedule:
             val = learning_rate_schedule[epoch]
@@ -298,7 +308,7 @@ def main(num_epochs=30, batch_size=16):
         train_batches = 0
         start_time = time.time()
         print "Training Epoch %i" % (epoch + 1)
-
+        
         # Train for one epoch
         for batch in iterate_minibatches_synchronized(length, batch_size, augment=True, downsample=ds):
             inputs, targets = batch
@@ -311,7 +321,7 @@ def main(num_epochs=30, batch_size=16):
             bte = time.time()
             bt += (bte - bts)
             bidx += 1
-            if bidx == 60 and epoch == 0:
+            if bidx == 20 and epoch == 0:
                 tpb = bt / bidx
                 print "Average time per forward/backward pass: " + str(tpb)
                 eta = time.time() + num_epochs * (tpb * (length/batch_size))
@@ -321,8 +331,9 @@ def main(num_epochs=30, batch_size=16):
             train_losses.append(err)
             train_err += err
             train_batches += 1
+
             # Save intermedia train loss
-            if bidx % 10 == 0:
+            if bidx % 20 == 0:
                 np.save('./data/' + name + '_epoch_' + str(num_epochs) + '_loss_train.npy', np.array(train_losses))
 
 
@@ -343,8 +354,11 @@ def main(num_epochs=30, batch_size=16):
                 
                 if loss_func == spatial_gradient:
                     v_pred = np.exp(v_pred)
-                
                 current_se = (v_pred - y_t) ** 2
+                
+                # Ingore missing values and ranges greater than 2m for MSE calculation
+                current_se[y_t == 0] = 0
+                current_se[y_t > 2.0] = 0
                 # calc current mse for this minibatch
                 v_mse.append(current_se.mean())
                 v_losses.append(v_loss)
@@ -359,6 +373,7 @@ def main(num_epochs=30, batch_size=16):
         if validate:
             print("  val loss:\t\t{:.6f}".format(val_loss))
             print("  val mse:\t\t{:.6f}".format(val_mse))
+        
         # Store intermediate val loss
         np.save('./data/' + name + '_epoch_' + str(num_epochs) + '_loss_val.npy', np.array(val_losses))
         np.save('./data/' + name + '_epoch_' + str(num_epochs) + '_errors_val.npy', np.array(val_errors))
